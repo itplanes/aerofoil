@@ -628,6 +628,36 @@
         return div.innerHTML;
     }
 
+    function appendTorrentSearchRow(target, item, options = {}) {
+        const row = $('<tr></tr>');
+        const titleText = item && item.title ? String(item.title) : '-';
+        const seeders = (item && item.seeders !== undefined && item.seeders !== null) ? String(item.seeders) : '-';
+        const leechers = (item && item.leechers !== undefined && item.leechers !== null) ? String(item.leechers) : '-';
+
+        row.append($('<td></td>').text(titleText));
+        row.append($('<td></td>').text(formatBytes(item ? item.size : 0)));
+        row.append($('<td></td>').text(seeders));
+        row.append($('<td></td>').text(leechers));
+
+        const actionCell = $('<td></td>');
+        const button = $('<button type="button" class="btn btn-sm btn-warning queue-torrent-btn"></button>');
+        button.text(options.buttonLabel || 'Queue');
+        button.attr('data-download-url', String((item && item.download_url) || ''));
+        button.attr('data-title', String((item && item.title) || ''));
+        if (options.titleId !== undefined && options.titleId !== null) {
+            button.attr('data-title-id', String(options.titleId));
+        }
+        if (options.updateOnly) {
+            button.attr('data-update-only', 'true');
+        }
+        if (options.expectedVersion !== undefined && options.expectedVersion !== null) {
+            button.attr('data-expected-version', String(options.expectedVersion));
+        }
+        actionCell.append(button);
+        row.append(actionCell);
+        target.append(row);
+    }
+
     function renderDiscoverRow(containerId, items) {
         const el = document.getElementById(containerId);
         if (!el) return;
@@ -791,9 +821,10 @@
             }
 
             if (game.has_latest_version !== undefined) {
-                const versionBadge = $(`<span class="badge rounded-pill game-tag version-tag" title="${game.name} [${game.title_id}] Updates"></span>`)
+                const versionBadge = $('<span class="badge rounded-pill game-tag version-tag"></span>')
                     .addClass(`text-bg-${game.has_latest_version ? 'success' : 'warning'}`)
                     .html(`<i class="bi ${game.has_latest_version ? 'bi-check-circle-fill' : 'bi-arrow-down-circle'}"></i>`);
+                versionBadge.attr('title', `${String(game.name || '')} [${String(game.title_id || '')}] Updates`);
                 if (game.version !== undefined && game.version.length && Array.isArray(game.version)) {
                     const popoverContent = game.version.map(version => 
                         `${version.release_date}: v${version.version} ${version.owned ? 'Owned' : 'Missing'}`
@@ -1408,22 +1439,7 @@
                     }
                     $('#torrentSearchStatus').text(`Found ${results.length} results.`);
                     results.forEach(item => {
-                        const row = $(`
-                            <tr>
-                                <td>${item.title || '-'}</td>
-                                <td>${formatBytes(item.size)}</td>
-                                <td>${item.seeders ?? '-'}</td>
-                                <td>${item.leechers ?? '-'}</td>
-                                <td>
-                                    <button class="btn btn-sm btn-warning queue-torrent-btn"
-                                        data-download-url="${item.download_url}"
-                                        data-title="${item.title || ''}">
-                                        Queue
-                                    </button>
-                                </td>
-                            </tr>
-                        `);
-                        $('#torrentSearchResults').append(row);
+                        appendTorrentSearchRow($('#torrentSearchResults'), item, { buttonLabel: 'Queue' });
                     });
                 });
             });
@@ -1878,25 +1894,12 @@
                 }
                 $('#torrentSearchStatus').text(`Found ${results.length} results.`);
                 results.forEach(item => {
-                    const row = $(`
-                        <tr>
-                            <td>${item.title || '-'}</td>
-                            <td>${formatBytes(item.size)}</td>
-                            <td>${item.seeders ?? '-'}</td>
-                            <td>${item.leechers ?? '-'}</td>
-                            <td>
-                                <button class="btn btn-sm btn-warning queue-torrent-btn"
-                                    data-download-url="${item.download_url}"
-                                    data-title="${item.title || ''}"
-                                    data-title-id="${titleId || ''}"
-                                    data-update-only="true"
-                                    data-expected-version="${version}">
-                                    Queue update
-                                </button>
-                            </td>
-                        </tr>
-                    `);
-                    $('#torrentSearchResults').append(row);
+                    appendTorrentSearchRow($('#torrentSearchResults'), item, {
+                        buttonLabel: 'Queue update',
+                        titleId: (titleId || ''),
+                        updateOnly: true,
+                        expectedVersion: version
+                    });
                 });
                 $('#detailsDownloadStatus').text('');
             },
@@ -1935,25 +1938,12 @@
             }
             $('#torrentSearchStatus').text(`Found ${results.length} results.`);
             results.forEach(item => {
-                const row = $(`
-                    <tr>
-                        <td>${item.title || '-'}</td>
-                        <td>${formatBytes(item.size)}</td>
-                        <td>${item.seeders ?? '-'}</td>
-                        <td>${item.leechers ?? '-'}</td>
-                        <td>
-                            <button class="btn btn-sm btn-warning queue-torrent-btn"
-                                data-download-url="${item.download_url}"
-                                data-title="${item.title || ''}"
-                                data-title-id="${titleId || ''}"
-                                data-update-only="true"
-                                data-expected-version="${version}">
-                                Queue update
-                            </button>
-                        </td>
-                    </tr>
-                `);
-                $('#torrentSearchResults').append(row);
+                appendTorrentSearchRow($('#torrentSearchResults'), item, {
+                    buttonLabel: 'Queue update',
+                    titleId: (titleId || ''),
+                    updateOnly: true,
+                    expectedVersion: version
+                });
             });
             $('#detailsDownloadStatus').text('');
         }).fail(function () {
