@@ -8,6 +8,8 @@ services:
       # For write permission in config directory
       - PUID=1000
       - PGID=1000
+      # Optional SSD-backed staging path for NSP/XCI -> NSZ/XCZ conversion work
+      - AEROFOIL_CONVERSION_STAGING_DIR=/app/conversion-tmp
       # to create/update an admin user at startup
       # - USER_ADMIN_NAME=admin
       # - USER_ADMIN_PASSWORD=asdvnf!546
@@ -18,6 +20,6 @@ services:
       - /your/game/directory:/games
       - ./config:/app/config
       - ./data:/app/data
+      - ./conversion-tmp:/app/conversion-tmp
     ports:
       - "8465:8465"
-

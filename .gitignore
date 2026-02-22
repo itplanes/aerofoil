@@ -1,6 +1,7 @@
 __pycache__
 config
 data
+conversion-tmp
 
 # venv
 /bin

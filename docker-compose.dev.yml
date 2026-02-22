@@ -10,6 +10,8 @@ services:
       - PGID=1000
       # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
       - LOG_LEVEL=DEBUG
+      # Optional SSD-backed staging path for NSP/XCI -> NSZ/XCZ conversion work
+      - AEROFOIL_CONVERSION_STAGING_DIR=/app/conversion-tmp
       # to create/update an admin user at startup
       - USER_ADMIN_NAME=admin
       - USER_ADMIN_PASSWORD=admin
@@ -20,8 +22,8 @@ services:
       - /your/game/directory:/games
       - ./config:/app/config
       - ./data:/app/data
+      - ./conversion-tmp:/app/conversion-tmp
       # Mount source code for live development
       - ./app:/app
     ports:
       - "8465:8465"
-
