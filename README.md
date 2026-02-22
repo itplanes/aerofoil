@@ -84,6 +84,8 @@ New `AEROFOIL_*` variables are preferred. Legacy `OWNFOIL_*` names are still acc
 - `AEROFOIL_SECRET_KEY`: Flask secret key used for sessions/cookies. Recommended to set a long random value in production (default: auto-generated at startup).
 - `AEROFOIL_TRUST_PROXY_HEADERS`: enable trusting `X-Forwarded-For` when the proxy is in the trusted list (`true`/`false`, default: `false`).
 - `AEROFOIL_TRUSTED_PROXIES`: comma-separated proxy IPs/CIDRs (default: empty), for example `172.16.0.0/12,192.168.0.0/16`.
+- `AEROFOIL_CONVERSION_STAGING_ENABLED`: enable fixed Docker staging path (`/app/conversion-tmp`) for temporary NSP/XCI conversion output (`true`/`false`, default: unset/disabled).
+- `AEROFOIL_CONVERSION_STAGING_DIR`: absolute path for temporary NSP/XCI conversion output (default: empty, which keeps direct in-library conversion output).
 - `SHOP_SECTIONS_CACHE_TTL_S`: cache TTL for `/api/shop/sections` (seconds). Use `none`/unset for rebuild-only (default), `0` to disable caching. Recommended: `none` for stable libraries, or `600`-`900` for periodic refresh.
 - `MEDIA_INDEX_TTL_S`: cache TTL for icon/banner media index (seconds). Use `none`/unset for rebuild-only (default), `0` to disable caching. Recommended: `none` or `600`-`900`.
 - `AEROFOIL_HOST`: bind host for the web server (default: `0.0.0.0`).
@@ -159,6 +161,7 @@ AeroFoil will download the TitleDB descriptions/screenshot dataset on demand to 
 Conversion details:
 - Uses the installed Python `nsz` package (with progress output).
 - Uses the same `keys.txt` uploaded in the `Settings` page.
+- Optional conversion staging directory lets you run temporary conversion IO on a different disk/pool before finalizing output into the library path.
 - Shows live status, per-file progress, and the current filename.
 - Filters out files smaller than 50 MB from the manual conversion dropdown.
 - The `Verbose` checkbox shows detailed task output; otherwise the task output stays clean.
@@ -204,8 +207,10 @@ The same section also includes login protection controls: temporary IP lockout a
 
 # Deployment notes
 - Recommended volumes: `/games`, `/app/config`, and `/app/data`.
+- Optional conversion staging volume: `/app/conversion-tmp` (recommended on SSD when libraries are on slower pools).
 - Map port `8465` from the container to any host port you prefer.
 - To bootstrap an admin account, set `USER_ADMIN_NAME` and `USER_ADMIN_PASSWORD` when starting the container.
+- Optional env var: `AEROFOIL_CONVERSION_STAGING_DIR` (or legacy `OWNFOIL_CONVERSION_STAGING_DIR`) to force a staging path from environment.
 - Cache TTL env vars (seconds):
   - `SHOP_SECTIONS_CACHE_TTL_S`: cache for `/api/shop/sections` (use `none`/unset for rebuild-only, `0` to disable caching).
   - `MEDIA_INDEX_TTL_S`: media cache index for icons/banners (use `none`/unset for rebuild-only, `0` to disable caching).
@@ -251,5 +256,3 @@ Planned feature, in no particular order.
  - External services:
     - [x] Prowlarr integration for automatic update downloads (via torrent client)
     - [x] Automated update downloader pipeline (search -> download -> ingest)
-
-
