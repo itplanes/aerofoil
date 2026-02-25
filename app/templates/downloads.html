@@ -135,7 +135,9 @@
         $.getJSON('/api/downloads/active', function (result) {
             if (!result['success']) {
                 const msg = result['message'] || 'Failed to load active downloads.';
-                body.html(`<tr><td colspan="11" class="text-danger">${msg}</td></tr>`);
+                const errorRow = $('<tr></tr>');
+                errorRow.append($('<td colspan="11" class="text-danger"></td>').text(msg));
+                body.empty().append(errorRow);
                 return;
             }
             const items = result['items'] || [];
@@ -146,21 +148,18 @@
             body.empty();
             items.forEach(item => {
                 const progress = Number(item['progress'] || 0);
-                const row = $(`
-                    <tr>
-                        <td class="small">${(item['name'] || '').toString()}</td>
-                        <td class="small text-muted">${(item['status'] || '').toString()}</td>
-                        <td class="small">${progress.toFixed(1)}%</td>
-                        <td class="small">${formatSpeed(item['down_speed'])}</td>
-                        <td class="small">${formatSpeed(item['up_speed'])}</td>
-                        <td class="small">${item['peers'] ?? '-'}</td>
-                        <td class="small">${item['seeders'] ?? '-'}</td>
-                        <td class="small">${item['leechers'] ?? '-'}</td>
-                        <td class="small">${formatEta(item['eta'])}</td>
-                        <td class="small">${formatBytes(item['size'])}</td>
-                        <td class="small">${formatBytes(item['downloaded'])}</td>
-                    </tr>
-                `);
+                const row = $('<tr></tr>');
+                row.append($('<td class="small"></td>').text((item['name'] || '').toString()));
+                row.append($('<td class="small text-muted"></td>').text((item['status'] || '').toString()));
+                row.append($('<td class="small"></td>').text(`${progress.toFixed(1)}%`));
+                row.append($('<td class="small"></td>').text(formatSpeed(item['down_speed'])));
+                row.append($('<td class="small"></td>').text(formatSpeed(item['up_speed'])));
+                row.append($('<td class="small"></td>').text(item['peers'] ?? '-'));
+                row.append($('<td class="small"></td>').text(item['seeders'] ?? '-'));
+                row.append($('<td class="small"></td>').text(item['leechers'] ?? '-'));
+                row.append($('<td class="small"></td>').text(formatEta(item['eta'])));
+                row.append($('<td class="small"></td>').text(formatBytes(item['size'])));
+                row.append($('<td class="small"></td>').text(formatBytes(item['downloaded'])));
                 body.append(row);
             });
         });
@@ -208,4 +207,3 @@
     });
 </script>
 {% endblock %}
-

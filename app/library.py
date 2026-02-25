@@ -3,6 +3,7 @@ import gc
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1175,6 +1176,27 @@ def _format_nsz_command(command_template, input_file, output_file, threads=None,
         command = f"{command} -t {threads}"
     return command
 
+def _parse_command_args(command):
+    if isinstance(command, (list, tuple)):
+        args = [str(part) for part in command if str(part)]
+    else:
+        text = str(command or '').strip()
+        if not text:
+            raise ValueError('Conversion command is empty.')
+        try:
+            args = shlex.split(text, posix=(os.name != 'nt'))
+        except ValueError as e:
+            raise ValueError(f'Invalid conversion command syntax: {e}') from e
+    if not args:
+        raise ValueError('Conversion command is empty.')
+    return args
+
+def _format_command_for_log(command):
+    args = _parse_command_args(command)
+    if os.name == 'nt':
+        return subprocess.list2cmdline(args)
+    return ' '.join(shlex.quote(arg) for arg in args)
+
 def _expected_compressed_output_path(input_file):
     base, ext = os.path.splitext(str(input_file or ''))
     ext = str(ext or '').strip().lower()
@@ -1293,15 +1315,16 @@ def _summarize_conversion_failure(log_text, output_file=None):
     return summary
 
 def _run_command(command, log_cb=None, stream_output=False, cancel_cb=None, timeout_seconds=None):
+    command_args = _parse_command_args(command)
     env = os.environ.copy()
     env['PYTHONIOENCODING'] = 'utf-8'
     env['PYTHONUTF8'] = '1'
     if not stream_output:
-        return subprocess.run(command, shell=True, capture_output=True, text=True, env=env)
+        return subprocess.run(command_args, shell=False, capture_output=True, text=True, env=env)
 
     process = subprocess.Popen(
-        command,
-        shell=True,
+        command_args,
+        shell=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -1334,7 +1357,7 @@ def _run_command(command, log_cb=None, stream_output=False, cancel_cb=None, time
                 time.sleep(0.2)
     returncode = process.wait()
     stderr_summary = '\n'.join(streamed_lines[-40:]) if streamed_lines else ''
-    result = subprocess.CompletedProcess(command, returncode, '', stderr_summary)
+    result = subprocess.CompletedProcess(command_args, returncode, '', stderr_summary)
     return result
 
 def _choose_primary_app(apps):
@@ -2173,6 +2196,15 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
             threads=threads,
             verify=verify
         )
+        try:
+            command_args = _parse_command_args(command)
+        except ValueError as e:
+            results['errors'].append(str(e))
+            add_detail(f"Error preparing command for {source_path}: {e}.")
+            processed += 1
+            if progress_cb:
+                progress_cb(processed, total_files)
+            continue
 
         if dry_run:
             results['converted'] += 1
@@ -2186,9 +2218,9 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
 
         try:
             if log_cb:
-                log_cb(f"Running: {command}")
+                log_cb(f"Running: {_format_command_for_log(command_args)}")
             process = _run_command(
-                command,
+                command_args,
                 log_cb=log_cb,
                 stream_output=stream_output,
                 cancel_cb=cancel_cb,
@@ -2408,6 +2440,16 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
         threads=threads,
         verify=verify
     )
+    try:
+        command_args = _parse_command_args(command)
+    except ValueError as e:
+        results['success'] = False
+        results['errors'].append(str(e))
+        if verbose:
+            results['details'].append(f"Error preparing command for {source_path}: {e}.")
+        if progress_cb:
+            progress_cb(1, 1)
+        return results
 
     if cancel_cb and cancel_cb():
         if log_cb:
@@ -2424,9 +2466,9 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
 
     try:
         if log_cb:
-            log_cb(f"Running: {command}")
+            log_cb(f"Running: {_format_command_for_log(command_args)}")
         process = _run_command(
-            command,
+            command_args,
             log_cb=log_cb,
             stream_output=stream_output,
             cancel_cb=cancel_cb,
