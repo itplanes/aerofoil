@@ -46,6 +46,7 @@ import secrets
 import gc
 import ctypes
 import zipfile
+import tempfile
 
 from app.db import add_access_event, get_access_events
 
@@ -1170,6 +1171,28 @@ logging.getLogger('werkzeug').addFilter(FilterRemoveDateFromWerkzeugLogs())
 
 # Suppress specific Alembic INFO logs
 logging.getLogger('alembic.runtime.migration').setLevel(logging.WARNING)
+
+def _configure_upload_tempdir():
+    configured = (
+        os.environ.get('AEROFOIL_UPLOAD_TMP_DIR')
+        or os.environ.get('OWNFOIL_UPLOAD_TMP_DIR')
+        or os.path.join(DATA_DIR, 'tmp', 'uploads')
+    )
+    upload_tmp_dir = str(configured).strip()
+    if not upload_tmp_dir:
+        return
+    try:
+        os.makedirs(upload_tmp_dir, exist_ok=True)
+        tempfile.tempdir = upload_tmp_dir
+        # Keep environment hints aligned for subprocesses/libs that inspect these.
+        os.environ['TMPDIR'] = upload_tmp_dir
+        os.environ['TMP'] = upload_tmp_dir
+        os.environ['TEMP'] = upload_tmp_dir
+        logger.info('Using upload temp directory: %s', upload_tmp_dir)
+    except Exception:
+        logger.exception('Failed to configure upload temp directory: %s', upload_tmp_dir)
+
+_configure_upload_tempdir()
 
 # API response helper functions for consistent error handling
 def api_error(message, status_code=400, error_code=None):
@@ -4474,14 +4497,17 @@ def delete_keys_file():
 def upload_library_files():
     try:
         files = request.files.getlist('files')
+    except RequestEntityTooLarge:
+        raise
     except Exception as e:
-        logger.error("Failed to parse upload request: %s", e)
+        logger.exception("Failed to parse upload request")
+        parsed_message = str(e).strip() or e.__class__.__name__
         return jsonify({
             'success': False,
-            'message': 'Unable to parse upload request.',
+            'message': f'Unable to parse upload request: {parsed_message}',
             'uploaded': 0,
             'skipped': 0,
-            'errors': [str(e)]
+            'errors': [parsed_message]
         }), 400
 
     if not files:
