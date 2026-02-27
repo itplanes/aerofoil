@@ -441,7 +441,7 @@ shop_root_cache = {
     'encrypted': {},
 }
 _SHOP_ROOT_ENCRYPTED_CACHE_LIMIT = 8
-_TITLES_METADATA_CACHE_VERSION = 2
+_TITLES_METADATA_CACHE_VERSION = 3
 titles_metadata_cache_lock = threading.Lock()
 titles_metadata_cache = {
     'version': _TITLES_METADATA_CACHE_VERSION,
@@ -630,12 +630,19 @@ def _split_genres_value(raw):
 def _normalize_library_search_text(text):
     value = str(text or '')
     try:
-        value = unicodedata.normalize('NFKD', value)
-        value = value.encode('ascii', 'ignore').decode('ascii')
+        # Keep Unicode letters (e.g. CJK), but normalize width/compat forms.
+        value = unicodedata.normalize('NFKC', value)
+        # Fold accents for Latin-like scripts while keeping non-Latin letters.
+        value = ''.join(
+            ch for ch in unicodedata.normalize('NFKD', value)
+            if unicodedata.category(ch) != 'Mn'
+        )
     except Exception:
         pass
-    value = re.sub(r"[^A-Za-z0-9\s]+", " ", value)
-    return re.sub(r"\s+", " ", value).strip().lower()
+    value = value.casefold()
+    value = re.sub(r"_+", " ", value)
+    value = re.sub(r"[^\w\s]+", " ", value, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", value).strip()
 
 def _search_matches_normalized_text(query_normalized, field_value):
     hay = _normalize_library_search_text(field_value)
