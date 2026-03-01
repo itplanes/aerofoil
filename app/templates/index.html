@@ -1634,7 +1634,11 @@
             return;
         }
 
-        const title = game.title_id_name || game.name || game.title_id || game.app_id;
+        const baseTitle = game.title_id_name || game.title_id || game.app_id;
+        const dlcName = game.name || game.app_id;
+        const title = (String(game.app_type || '').toUpperCase() === 'DLC' && dlcName && dlcName !== baseTitle)
+            ? `${baseTitle} - ${dlcName}`
+            : (baseTitle || dlcName);
         $('#detailsTitle').text(title);
         $('#detailsSubtitle').text(`${game.app_type} | App ID ${game.app_id} | Title ID ${game.title_id}`);
 
