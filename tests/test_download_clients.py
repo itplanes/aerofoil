@@ -9,6 +9,7 @@ from app.downloads.manager import (
     _infer_update_info_from_completed_item,
     _iter_importable_download_files,
     _normalize_imported_wrapped_files,
+    _search_and_queue,
     get_download_ui_visibility,
     get_active_downloads,
     get_downloads_state,
@@ -302,6 +303,39 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(message, "Queued download.")
         queue_download_mock.assert_called_once()
+
+    @patch("app.downloads.manager.load_settings")
+    @patch("app.downloads.manager.pick_best_result")
+    def test_search_and_queue_requires_exact_version_by_default(self, pick_best_result_mock, load_settings_mock):
+        load_settings_mock.return_value = {"downloads": {}}
+        client = type("Client", (), {
+            "search": lambda self, query, indexer_ids=None, categories=None, limit=None: [
+                {"title": "Example Title Update [v1245184]", "protocol": "usenet", "download_url": "https://indexer.example/file.nzb"}
+            ]
+        })()
+
+        def pick_result(results, **kwargs):
+            self.assertTrue(kwargs["require_exact_version"])
+            return None
+
+        pick_best_result_mock.side_effect = pick_result
+
+        ok, message = _search_and_queue(
+            client=client,
+            update={"title_id": "0100000000010000", "title_name": "Example Title", "version": 1245184},
+            downloads={},
+            indexer_ids=[],
+            categories=[],
+            required_terms=[],
+            blacklist_terms=[],
+            min_seeders=0,
+            min_age_minutes=0,
+            search_limit=10,
+            allowed_protocols=["usenet"],
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(message, "No matching results found.")
 
     def test_format_pending_label_falls_back_to_expected_name_for_manual_items(self):
         self.assertEqual(
