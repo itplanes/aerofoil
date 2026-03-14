@@ -1339,12 +1339,13 @@ def _resolve_save_sync_user():
         if user is None or not check_password_hash(user.password, auth.password):
             return None, 'Invalid save sync credentials.', 401
 
-        if bool(getattr(user, 'frozen', False)):
-            message = (getattr(user, 'frozen_message', None) or '').strip() or 'Account is frozen.'
-            return None, message, 403
+    if bool(getattr(user, 'frozen', False)):
+        message = (getattr(user, 'frozen_message', None) or '').strip() or 'Account is frozen.'
+        return None, message, 403
 
-        if not user.has_shop_access():
-            return None, f'User "{auth.username}" does not have access to the shop.', 403
+    if not user.has_shop_access():
+        username = str(getattr(user, 'user', '') or '').strip() or 'unknown'
+        return None, f'User "{username}" does not have access to the shop.', 403
 
     if not bool(getattr(user, 'backup_access', False)):
         return None, 'Backup access is required for save sync.', 403
