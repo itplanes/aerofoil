@@ -23,7 +23,7 @@ from datetime import timedelta, datetime
 flask.cli.show_server_banner = lambda *args: None
 from app.constants import *
 from app.settings import *
-from app.downloads import ProwlarrClient, filter_results, test_download_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility
+from app.downloads import ProwlarrClient, filter_results, test_download_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results
 from app.library import organize_library, delete_older_updates, delete_duplicates, delete_library_content, delete_orphaned_addons
 from app.db import *
 from app.shop import *
@@ -3352,14 +3352,7 @@ def request_prowlarr_search_api():
             categories=prowlarr_cfg.get('categories') or [],
             limit=search_limit,
         )
-        min_seeders, min_age_minutes = _get_download_filter_thresholds(downloads)
-        results = filter_results(
-            results,
-            min_seeders=min_seeders,
-            min_age_minutes=min_age_minutes,
-            required_terms=downloads.get('required_terms') or [],
-            blacklist_terms=downloads.get('blacklist_terms') or [],
-        )
+        results = filter_download_search_results(results, downloads)
         trimmed = _trim_download_search_results(results, limit=50)
         return jsonify({'success': True, 'results': trimmed})
     except Exception as e:
@@ -4047,13 +4040,10 @@ def downloads_search():
             limit=search_limit,
         )
         if apply_settings:
-            min_seeders, min_age_minutes = _get_download_filter_thresholds(downloads)
-            results = filter_results(
+            results = filter_download_search_results(
                 results,
-                min_seeders=min_seeders,
-                min_age_minutes=min_age_minutes,
-                required_terms=downloads.get('required_terms') or [],
-                blacklist_terms=(downloads.get('blacklist_terms') or []) + extra_blacklist_terms,
+                downloads,
+                blacklist_terms=extra_blacklist_terms,
             )
         trimmed = _trim_download_search_results(results, limit=50)
         return jsonify({'success': True, 'results': trimmed})

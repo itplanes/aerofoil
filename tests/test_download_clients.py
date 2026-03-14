@@ -10,6 +10,7 @@ from app.downloads.manager import (
     _iter_importable_download_files,
     _normalize_imported_wrapped_files,
     _search_and_queue,
+    filter_download_search_results,
     get_download_ui_visibility,
     get_active_downloads,
     get_downloads_state,
@@ -18,7 +19,7 @@ from app.downloads.manager import (
     search_update_options,
 )
 from app.downloads.prowlarr import _normalize_result
-from app.downloads.usenet_client import add_nzb, list_active
+from app.downloads.usenet_client import add_nzb, list_active, list_completed
 from app.downloads.usenet_client import _restrict_job_to_matching_update_files
 
 
@@ -337,6 +338,22 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(message, "No matching results found.")
 
+    def test_filter_download_search_results_excludes_unconfigured_protocols(self):
+        results = [
+            {"title": "Example Torrent", "protocol": "torrent", "seeders": 50},
+            {"title": "Example NZB", "protocol": "usenet", "age_minutes": 120},
+        ]
+
+        filtered = filter_download_search_results(results, {
+            "usenet_client": {
+                "type": "sabnzbd",
+                "url": "http://sab.local",
+                "api_key": "secret",
+            }
+        })
+
+        self.assertEqual([item["protocol"] for item in filtered], ["usenet"])
+
     def test_format_pending_label_falls_back_to_expected_name_for_manual_items(self):
         self.assertEqual(
             _format_pending_label({
@@ -516,6 +533,49 @@ class SabSelectionTests(unittest.TestCase):
         self.assertIsNone(items[1]["down_speed"])
         self.assertEqual(items[0]["queue_down_speed"], int(512.5 * 1024))
         self.assertEqual(items[1]["queue_down_speed"], int(512.5 * 1024))
+
+    @patch("app.downloads.usenet_client._sab_request")
+    def test_list_completed_ignores_shared_completed_dir_rows(self, sab_request_mock):
+        sab_request_mock.return_value = {
+            "history": {
+                "completed_dir": "D:\\Downloads\\Complete",
+                "slots": [
+                    {
+                        "nzo_id": "nzo123",
+                        "status": "Completed",
+                        "category": "aerofoil",
+                        "storage": "D:\\Downloads\\Complete",
+                        "name": "Shared Root",
+                    }
+                ],
+            }
+        }
+
+        items = list_completed("http://sab.local", "secret", category="aerofoil")
+
+        self.assertEqual(items, [])
+
+    @patch("app.downloads.usenet_client._sab_request")
+    def test_list_completed_keeps_job_subdirectories_under_completed_dir(self, sab_request_mock):
+        sab_request_mock.return_value = {
+            "history": {
+                "completed_dir": "D:\\Downloads\\Complete",
+                "slots": [
+                    {
+                        "nzo_id": "nzo123",
+                        "status": "Completed",
+                        "category": "aerofoil",
+                        "storage": "D:\\Downloads\\Complete\\Example Release",
+                        "name": "Example Release",
+                    }
+                ],
+            }
+        }
+
+        items = list_completed("http://sab.local", "secret", category="aerofoil")
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["path"], "D:\\Downloads\\Complete\\Example Release")
 
 
 class CompletedAdoptionTests(unittest.TestCase):

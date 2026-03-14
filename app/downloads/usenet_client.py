@@ -1,3 +1,4 @@
+import os
 import logging
 import time
 
@@ -159,6 +160,10 @@ def list_completed(url, api_key, category=None, timeout_seconds=15):
         return []
     history = payload.get("history") if isinstance(payload, dict) else {}
     slots = history.get("slots") or []
+    completed_dir = _normalize_completed_root(
+        history.get("completed_dir")
+        or payload.get("completed_dir")
+    )
     completed = []
     for item in slots:
         if not isinstance(item, dict):
@@ -173,8 +178,13 @@ def list_completed(url, api_key, category=None, timeout_seconds=15):
         nzo_id = str(item.get("nzo_id") or "").strip() or None
         path = item.get("storage") or item.get("path") or item.get("downloaded_path") or ""
         path = str(path or "").strip()
-        if not path:
+        normalized_path = _normalize_completed_root(path)
+        if not normalized_path:
             # Avoid treating the global completed_dir as a per-job path.
+            continue
+        item_completed_dir = _normalize_completed_root(item.get("completed_dir"))
+        if normalized_path == (item_completed_dir or completed_dir):
+            # Avoid treating SABnzbd's shared completed_dir as a per-job path.
             continue
         completed.append({
             "id": nzo_id,
@@ -210,6 +220,14 @@ def remove_history(url, api_key, item_id, timeout_seconds=15):
         return True, "SABnzbd history entry removed."
     message = payload.get("error") or payload.get("message") or "SABnzbd failed to remove history entry."
     return False, str(message)
+
+
+def _normalize_completed_root(path):
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    normalized = os.path.normpath(text)
+    return os.path.normcase(normalized)
 
 
 def _sab_request(base_url, api_key, mode, timeout_seconds=15, **params):

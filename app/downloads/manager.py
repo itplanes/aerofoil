@@ -17,7 +17,7 @@ from app.downloads.client import (
     queue_download,
     remove_completed_download,
 )
-from app.downloads.prowlarr import ProwlarrClient, pick_best_result
+from app.downloads.prowlarr import ProwlarrClient, filter_results, pick_best_result
 from app.library import _ensure_unique_path, _sanitize_component, enqueue_cleanup_roots, enqueue_organize_paths
 from app.settings import load_settings
 
@@ -108,6 +108,28 @@ def _get_configured_protocols(downloads):
         protocol for protocol in ("torrent", "usenet")
         if _is_protocol_client_configured(downloads, protocol)
     ]
+
+
+def get_configured_download_protocols(downloads):
+    return _get_configured_protocols(downloads)
+
+
+def filter_download_search_results(results, downloads, blacklist_terms=None):
+    downloads = downloads or {}
+    filtered = filter_results(
+        results,
+        min_seeders=_get_torrent_min_seeders(downloads),
+        min_age_minutes=_get_usenet_min_age_minutes(downloads),
+        required_terms=downloads.get("required_terms") or [],
+        blacklist_terms=(downloads.get("blacklist_terms") or []) + (blacklist_terms or []),
+    )
+    allowed_protocols = _get_configured_protocols(downloads)
+    if allowed_protocols:
+        filtered = [
+            item for item in filtered
+            if str(item.get("protocol") or "").strip().lower() in allowed_protocols
+        ]
+    return filtered
 
 
 def get_download_ui_visibility(downloads):
