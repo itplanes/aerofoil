@@ -38,9 +38,9 @@
                                                 <th>Client</th>
                                                 <th>Status</th>
                                                 <th>Progress</th>
+                                                {% if download_ui_visibility.show_torrent_columns %}
                                                 <th>Down</th>
                                                 <th>Up</th>
-                                                {% if download_ui_visibility.show_torrent_columns %}
                                                 <th>Peers</th>
                                                 <th>Seeders</th>
                                                 <th>Leechers</th>
@@ -95,9 +95,9 @@
 <script>
     let downloadsPollTimer = null;
     const downloadUiVisibility = {{ download_ui_visibility|tojson }};
-    const activeDownloadsColumnCount = 9
+    const activeDownloadsColumnCount = 7
         + (downloadUiVisibility.show_protocol_column ? 1 : 0)
-        + (downloadUiVisibility.show_torrent_columns ? 3 : 0);
+        + (downloadUiVisibility.show_torrent_columns ? 5 : 0);
     const queueColumnCount = 5;
 
     function showDownloadsAlert(message, type = 'info') {
@@ -249,9 +249,9 @@
                 row.append($('<td class="small text-muted"></td>').text((item['client_type'] || '').toString() || '-'));
                 row.append($('<td class="small text-muted"></td>').text((item['status'] || '').toString()));
                 row.append($('<td class="small"></td>').text(`${progress.toFixed(1)}%`));
-                row.append($('<td class="small"></td>').text(formatSpeed(item['down_speed'])));
-                row.append($('<td class="small"></td>').text(formatSpeed(item['up_speed'])));
                 if (downloadUiVisibility.show_torrent_columns) {
+                    row.append($('<td class="small"></td>').text(formatSpeed(item['down_speed'])));
+                    row.append($('<td class="small"></td>').text(formatSpeed(item['up_speed'])));
                     row.append($('<td class="small"></td>').text(item['peers'] ?? '-'));
                     row.append($('<td class="small"></td>').text(item['seeders'] ?? '-'));
                     row.append($('<td class="small"></td>').text(item['leechers'] ?? '-'));

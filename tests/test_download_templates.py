@@ -21,9 +21,12 @@ class DownloadTemplateRegressionTests(unittest.TestCase):
         content = (REPO_ROOT / "app" / "templates" / "downloads.html").read_text(encoding="utf-8")
 
         self.assertIn("function loadActiveDownloads() {", content)
+        self.assertIn("{% if download_ui_visibility.show_torrent_columns %}\n                                                <th>Down</th>\n                                                <th>Up</th>", content)
+        self.assertIn("const activeDownloadsColumnCount = 7", content)
         self.assertIn("const row = $('<tr></tr>');", content)
         self.assertIn("row.append($('<td class=\"small\"></td>').text((item['name'] || '').toString()));", content)
         self.assertIn("row.append($('<td class=\"small text-muted\"></td>').text((item['status'] || '').toString()));", content)
+        self.assertIn("if (downloadUiVisibility.show_torrent_columns) {\n                    row.append($('<td class=\"small\"></td>').text(formatSpeed(item['down_speed'])));", content)
         self.assertIn("body.append(row);", content)
         self.assertNotIn("const row = $(`<tr>${cells.join('')}</tr>`);", content)
         self.assertNotIn("`<td class=\"small\">${(item['name'] || '').toString()}</td>`", content)
