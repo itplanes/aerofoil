@@ -10,12 +10,22 @@ class DownloadTemplateRegressionTests(unittest.TestCase):
         content = (REPO_ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("function buildDownloadSearchRow(item, actionLabel, extraData = {}) {", content)
+        self.assertIn("function renderDownloadSearchResults(result, actionLabel, buildExtraData) {", content)
+        self.assertIn("function runDetailsDownloadSearch({ button, statusMessage = 'Searching Prowlarr...', request, actionLabel, buildExtraData }) {", content)
         self.assertIn("const row = $('<tr></tr>');", content)
         self.assertIn("row.append($('<td></td>').text(item?.title || '-'));", content)
         self.assertIn("row.append($('<td></td>').text(item?.indexer || '-'));", content)
         self.assertIn("button.attr('data-download-url', String(item?.download_url || ''));", content)
+        self.assertIn("renderDownloadSearchResults(result, actionLabel, buildExtraData);", content)
         self.assertNotIn("return `<tr>${cells.join('')}</tr>`;", content)
         self.assertNotIn('data-download-url="${item.download_url || \'\'}"', content)
+
+    def test_index_download_search_handlers_route_through_shared_helper(self):
+        content = (REPO_ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
+
+        self.assertEqual(content.count("runDetailsDownloadSearch({"), 5)
+        self.assertIn("statusMessage: `Searching Prowlarr for ${label}...`,", content)
+        self.assertIn("bootstrap.Modal.getOrCreateInstance(document.getElementById('torrentSearchModal')).show();", content)
 
     def test_active_download_rows_use_safe_dom_construction(self):
         content = (REPO_ROOT / "app" / "templates" / "downloads.html").read_text(encoding="utf-8")

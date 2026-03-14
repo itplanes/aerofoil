@@ -8,6 +8,7 @@ from app.downloads.client import queue_download, remove_active_download, remove_
 from app.downloads.manager import (
     _check_completed,
     _adopt_untracked_completed_item,
+    _build_pending_queue_item,
     _format_pending_label,
     _infer_update_info_from_completed_item,
     _iter_importable_download_files,
@@ -368,6 +369,41 @@ class QueueRoutingTests(unittest.TestCase):
             }),
             "Example Release NSW-GRP",
         )
+
+    def test_build_pending_queue_item_prefers_completed_name_for_stuck_entries(self):
+        info = {
+            "title_id": "0100000000010000",
+            "version": 123,
+            "hash": "nzo123",
+            "id": "nzo123",
+            "expected_name": "Example Release NSW-GRP",
+            "title_name": "Example Title",
+            "protocol": "usenet",
+            "client_type": "sabnzbd",
+            "state": "stuck",
+            "state_reason": "move failed",
+            "last_seen_status": "Completed",
+            "last_seen_path": "X:\\fixture-root\\incoming\\Example Release NSW-GRP",
+        }
+        snapshot = {
+            "active_by_protocol": {},
+            "completed_by_protocol": {
+                "usenet": {
+                    "items": [{
+                        "id": "nzo123",
+                        "hash": "nzo123",
+                        "name": "Example Release NSW-GRP",
+                        "path": "X:\\fixture-root\\incoming\\Example Release NSW-GRP",
+                    }],
+                },
+            },
+        }
+
+        item = _build_pending_queue_item("0100000000010000:123", info, snapshot)
+
+        self.assertEqual(item["label"], "Example Release NSW-GRP")
+        self.assertEqual(item["state"], "stuck")
+        self.assertEqual(item["state_reason"], "move failed")
 
     @patch("app.downloads.manager._state_lock")
     @patch("app.downloads.manager._state", {

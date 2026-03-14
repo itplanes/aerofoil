@@ -4160,7 +4160,7 @@ def manage_delete_library_content():
         version=version,
     )
     if not dry_run and results.get('mutated'):
-        post_library_change()
+        _run_post_library_change()
     status_code = 200 if results.get('success') else 400
     return jsonify(results), status_code
 

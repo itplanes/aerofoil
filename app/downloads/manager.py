@@ -259,6 +259,175 @@ def _ensure_downloads_state_loaded():
         _load_downloads_state_locked()
 
 
+def _get_snapshot_protocol_bucket(snapshot, protocol, bucket_name):
+    return ((snapshot.get(bucket_name) or {}).get(protocol) or {})
+
+
+def _get_snapshot_matches(info, snapshot):
+    protocol = str((info or {}).get("protocol") or "").strip().lower()
+    active_items = _get_snapshot_protocol_bucket(snapshot, protocol, "active_by_protocol").get("items") or []
+    completed_items = _get_snapshot_protocol_bucket(snapshot, protocol, "completed_by_protocol").get("items") or []
+    return {
+        "protocol": protocol,
+        "active_match": _match_completed_item(info, active_items),
+        "completed_match": _match_completed_item(info, completed_items),
+    }
+
+
+def _get_unique_candidate_paths(*candidates):
+    candidate_paths = []
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text and text not in candidate_paths:
+            candidate_paths.append(text)
+    return candidate_paths
+
+
+def _build_pending_queue_item(key, info, snapshot):
+    matches = _get_snapshot_matches(info, snapshot)
+    active_match = matches["active_match"]
+    completed_match = matches["completed_match"]
+    state = "queued"
+    state_reason = None
+    if active_match:
+        _clear_pending_stuck(info)
+        _update_pending_live_metadata(info, item=active_match)
+        state = _normalize_queue_state_label(active_match.get("status"))
+    elif str(info.get("state") or "").strip().lower() == "stuck":
+        state = "stuck"
+        state_reason = str(info.get("state_reason") or "").strip() or "waiting for action"
+    elif completed_match:
+        _update_pending_live_metadata(info, item=completed_match, status="completed")
+        state = "completed"
+    expected_name = str(info.get("expected_name") or "").strip()
+    return {
+        "key": key,
+        "title_id": info.get("title_id"),
+        "version": info.get("version"),
+        "expected_name": expected_name or None,
+        "hash": info.get("hash"),
+        "id": info.get("id"),
+        "protocol": info.get("protocol"),
+        "client_type": info.get("client_type"),
+        "label": _format_pending_display_label(
+            info,
+            state=state,
+            active_match=active_match,
+            completed_match=completed_match,
+        ),
+        "state": state,
+        "state_reason": state_reason,
+        "deletable": True,
+    }
+
+
+def _remove_pending_state_entry_locked(key):
+    _state["pending"].pop(key, None)
+    _state["completed"].discard(key)
+    _persist_downloads_state_locked()
+
+
+def _set_pending_stuck_by_key(key, reason, live_item=None):
+    with _state_lock:
+        live_info = _state["pending"].get(key)
+        if live_info:
+            _set_pending_stuck(live_info, reason, live_item=live_item)
+
+
+def _delete_pending_payload_paths(candidate_paths):
+    for path in candidate_paths:
+        delete_ok, delete_message = _delete_download_payload(path)
+        if not delete_ok:
+            return False, delete_message or f"failed to delete {path}"
+    return True, None
+
+
+def _build_pending_delete_context(info, downloads, snapshot):
+    matches = _get_snapshot_matches(info, snapshot)
+    protocol = matches["protocol"]
+    active_bucket = _get_snapshot_protocol_bucket(snapshot, protocol, "active_by_protocol")
+    completed_bucket = _get_snapshot_protocol_bucket(snapshot, protocol, "completed_by_protocol")
+    live_match = matches["active_match"] or matches["completed_match"]
+    return {
+        "protocol": protocol,
+        "protocol_errors": ((snapshot.get("errors_by_protocol") or {}).get(protocol) or []),
+        "active_bucket": active_bucket,
+        "completed_bucket": completed_bucket,
+        "active_match": matches["active_match"],
+        "completed_match": matches["completed_match"],
+        "live_match": live_match,
+        "item_id": (
+            (live_match or {}).get("id")
+            or (live_match or {}).get("hash")
+            or info.get("id")
+            or info.get("hash")
+        ),
+        "candidate_paths": _get_unique_candidate_paths(
+            (live_match or {}).get("path"),
+            info.get("last_seen_path"),
+        ),
+        "client_configured": _is_protocol_client_configured(downloads, protocol),
+        "client_cfg": (
+            active_bucket.get("client_cfg")
+            or completed_bucket.get("client_cfg")
+            or _get_protocol_client_cfg(downloads, protocol)
+        ),
+    }
+
+
+def _remove_stale_pending_download(key, delete_context):
+    if delete_context["protocol_errors"] and delete_context["client_configured"]:
+        failure_reason = "could not verify downloader state"
+        _set_pending_stuck_by_key(key, f"delete failed: {failure_reason}")
+        return False, f"Failed to remove queued download: {failure_reason}"
+
+    payload_ok, payload_failure = _delete_pending_payload_paths(delete_context["candidate_paths"])
+    if payload_ok:
+        with _state_lock:
+            _remove_pending_state_entry_locked(key)
+        return True, "Removed stale queue entry."
+
+    _set_pending_stuck_by_key(key, f"delete failed: {payload_failure or 'cleanup failed'}")
+    return False, f"Failed to remove queued download: {payload_failure or 'cleanup failed'}"
+
+
+def _remove_pending_live_downloader_item(delete_context):
+    live_match = delete_context["live_match"]
+    protocol = delete_context["protocol"]
+    item_id = delete_context["item_id"]
+    client_cfg = delete_context["client_cfg"]
+    if live_match or delete_context["client_configured"]:
+        if delete_context["active_match"] and item_id:
+            return remove_active_download(protocol, client_cfg, item_id, delete_files=True)
+        if delete_context["completed_match"] and item_id:
+            return remove_completed_download(protocol, client_cfg, item_id, delete_files=True)
+        if protocol == "torrent" and item_id:
+            return remove_active_download(protocol, client_cfg, item_id, delete_files=True)
+        return True, "No matching downloader item found."
+    return False, "download client is not configured"
+
+
+def _remove_pending_live_download(key, delete_context):
+    downloader_ok, downloader_message = _remove_pending_live_downloader_item(delete_context)
+    payload_ok = True
+    payload_failure = None
+    if downloader_ok:
+        payload_ok, payload_failure = _delete_pending_payload_paths(delete_context["candidate_paths"])
+
+    if downloader_ok and payload_ok:
+        with _state_lock:
+            _remove_pending_state_entry_locked(key)
+        return True, "Removed queued download."
+
+    failure_reason = downloader_message if not downloader_ok else payload_failure
+    _set_pending_stuck_by_key(
+        key,
+        f"delete failed: {failure_reason or 'cleanup failed'}",
+        live_item=delete_context["live_match"],
+    )
+    return False, f"Failed to remove queued download: {failure_reason or 'cleanup failed'}"
+
+
 def get_downloads_state():
     _ensure_downloads_state_loaded()
     settings = load_settings()
@@ -268,38 +437,7 @@ def get_downloads_state():
     with _state_lock:
         pending_items = []
         for key, info in _state["pending"].items():
-            protocol = str(info.get("protocol") or "").strip().lower()
-            active_items = ((snapshot.get("active_by_protocol") or {}).get(protocol) or {}).get("items") or []
-            completed_items = ((snapshot.get("completed_by_protocol") or {}).get(protocol) or {}).get("items") or []
-            active_match = _match_completed_item(info, active_items)
-            completed_match = _match_completed_item(info, completed_items)
-            state = "queued"
-            state_reason = None
-            if active_match:
-                _clear_pending_stuck(info)
-                _update_pending_live_metadata(info, item=active_match)
-                state = _normalize_queue_state_label(active_match.get("status"))
-            elif str(info.get("state") or "").strip().lower() == "stuck":
-                state = "stuck"
-                state_reason = str(info.get("state_reason") or "").strip() or "waiting for action"
-            elif completed_match:
-                _update_pending_live_metadata(info, item=completed_match, status="completed")
-                state = "completed"
-            expected_name = str(info.get("expected_name") or "").strip()
-            pending_items.append({
-                "key": key,
-                "title_id": info.get("title_id"),
-                "version": info.get("version"),
-                "expected_name": expected_name or None,
-                "hash": info.get("hash"),
-                "id": info.get("id"),
-                "protocol": info.get("protocol"),
-                "client_type": info.get("client_type"),
-                "label": _format_pending_display_label(info, state=state, active_match=active_match, completed_match=completed_match),
-                "state": state,
-                "state_reason": state_reason,
-                "deletable": True,
-            })
+            pending_items.append(_build_pending_queue_item(key, info, snapshot))
         return {
             "running": _state["running"],
             "last_run": _state["last_run"],
@@ -439,115 +577,14 @@ def remove_pending_download(key):
 
     protocol = str(info.get("protocol") or "").strip().lower()
     if not protocol:
-        with _state_lock:
-            live_info = _state["pending"].get(key)
-            if live_info:
-                _set_pending_stuck(live_info, "missing download protocol")
+        _set_pending_stuck_by_key(key, "missing download protocol")
         return False, "Queue item is missing a download protocol."
 
     snapshot = _get_download_activity_snapshot(downloads)
-    active_bucket = ((snapshot.get("active_by_protocol") or {}).get(protocol) or {})
-    completed_bucket = ((snapshot.get("completed_by_protocol") or {}).get(protocol) or {})
-    protocol_errors = ((snapshot.get("errors_by_protocol") or {}).get(protocol) or [])
-    active_match = _match_completed_item(info, active_bucket.get("items") or [])
-    completed_match = _match_completed_item(info, completed_bucket.get("items") or [])
-    live_match = active_match or completed_match
-    item_id = (
-        (live_match or {}).get("id")
-        or (live_match or {}).get("hash")
-        or info.get("id")
-        or info.get("hash")
-    )
-    candidate_paths = []
-    for candidate in [
-        (live_match or {}).get("path"),
-        info.get("last_seen_path"),
-    ]:
-        text = str(candidate or "").strip()
-        if text and text not in candidate_paths:
-            candidate_paths.append(text)
-
-    if not live_match:
-        if protocol_errors and _is_protocol_client_configured(downloads, protocol):
-            failure_reason = "could not verify downloader state"
-            with _state_lock:
-                live_info = _state["pending"].get(key)
-                if live_info:
-                    _set_pending_stuck(live_info, f"delete failed: {failure_reason}")
-            return False, f"Failed to remove queued download: {failure_reason}"
-        payload_ok = True
-        payload_failure = None
-        for path in candidate_paths:
-            delete_ok, delete_message = _delete_download_payload(path)
-            if not delete_ok:
-                payload_ok = False
-                payload_failure = delete_message or f"failed to delete {path}"
-                break
-        if payload_ok:
-            with _state_lock:
-                _state["pending"].pop(key, None)
-                _state["completed"].discard(key)
-                _persist_downloads_state_locked()
-            return True, "Removed stale queue entry."
-        with _state_lock:
-            live_info = _state["pending"].get(key)
-            if live_info:
-                _set_pending_stuck(live_info, f"delete failed: {payload_failure or 'cleanup failed'}")
-        return False, f"Failed to remove queued download: {payload_failure or 'cleanup failed'}"
-
-    downloader_ok = False
-    downloader_message = None
-    if live_match or _is_protocol_client_configured(downloads, protocol):
-        client_cfg = (active_bucket.get("client_cfg") or completed_bucket.get("client_cfg") or _get_protocol_client_cfg(downloads, protocol))
-        if active_match and item_id:
-            downloader_ok, downloader_message = remove_active_download(
-                protocol,
-                client_cfg,
-                item_id,
-                delete_files=True,
-            )
-        elif completed_match and item_id:
-            downloader_ok, downloader_message = remove_completed_download(
-                protocol,
-                client_cfg,
-                item_id,
-                delete_files=True,
-            )
-        elif protocol == "torrent" and item_id:
-            downloader_ok, downloader_message = remove_active_download(
-                protocol,
-                client_cfg,
-                item_id,
-                delete_files=True,
-            )
-        else:
-            downloader_ok, downloader_message = True, "No matching downloader item found."
-    else:
-        downloader_message = "download client is not configured"
-
-    payload_ok = True
-    payload_failure = None
-    if downloader_ok:
-        for path in candidate_paths:
-            delete_ok, delete_message = _delete_download_payload(path)
-            if not delete_ok:
-                payload_ok = False
-                payload_failure = delete_message or f"failed to delete {path}"
-                break
-
-    if downloader_ok and payload_ok:
-        with _state_lock:
-            _state["pending"].pop(key, None)
-            _state["completed"].discard(key)
-            _persist_downloads_state_locked()
-        return True, "Removed queued download."
-
-    failure_reason = downloader_message if not downloader_ok else payload_failure
-    with _state_lock:
-        live_info = _state["pending"].get(key)
-        if live_info:
-            _set_pending_stuck(live_info, f"delete failed: {failure_reason or 'cleanup failed'}", live_item=live_match)
-    return False, f"Failed to remove queued download: {failure_reason or 'cleanup failed'}"
+    delete_context = _build_pending_delete_context(info, downloads, snapshot)
+    if not delete_context["live_match"]:
+        return _remove_stale_pending_download(key, delete_context)
+    return _remove_pending_live_download(key, delete_context)
 
 
 def _process_downloads(downloads, scan_cb=None, post_cb=None):
@@ -1231,6 +1268,74 @@ def _looks_like_update_download(item):
     return bool(update_path and version)
 
 
+def _load_completed_download_buckets(poll_targets):
+    completed_by_protocol = {}
+    for protocol, client_cfg in poll_targets:
+        completed_by_protocol[protocol] = {
+            "client_cfg": client_cfg,
+            "items": list_completed_downloads(protocol, client_cfg),
+            "matched_ids": set(),
+        }
+    return completed_by_protocol
+
+
+def _process_tracked_completed_item_locked(key, info, bucket):
+    match = _match_completed_item(info, bucket["items"])
+    if not match:
+        return []
+
+    _update_pending_live_metadata(info, item=match, status="completed")
+    move_info = _resolve_completed_update_info(info, match)
+    moved_result, move_reason = _move_completed_with_reason(match, move_info)
+    moved_match_paths = _coerce_moved_paths(moved_result)
+    if not moved_match_paths:
+        logger.warning(
+            "Matched completed download for pending key %s, but move failed. Keeping pending entry for retry: %s",
+            key,
+            move_reason or "unknown error",
+        )
+        _set_pending_stuck(info, move_reason or "move failed", live_item=match)
+        return []
+
+    matched_id = match.get("id") or match.get("hash")
+    if matched_id:
+        bucket["matched_ids"].add(matched_id)
+    _state["pending"].pop(key, None)
+    _state["completed"].add(key)
+    if matched_id:
+        ok, message = remove_completed_download(
+            str(info.get("protocol") or "").strip().lower(),
+            bucket["client_cfg"],
+            matched_id,
+        )
+        if not ok:
+            logger.warning("Failed to remove completed %s item %s: %s", info.get("protocol"), matched_id, message)
+    return moved_match_paths
+
+
+def _process_untracked_completed_bucket_locked(protocol, bucket):
+    unmatched_count = 0
+    moved_paths = []
+    for item in bucket["items"]:
+        item_id = item.get("id") or item.get("hash")
+        if item_id and item_id in bucket["matched_ids"]:
+            continue
+        if protocol == "torrent":
+            unmatched_count += 1
+            continue
+        moved_item_paths = _coerce_moved_paths(_adopt_untracked_completed_item(item))
+        if moved_item_paths:
+            matched_id = item.get("id") or item.get("hash")
+            if matched_id:
+                ok, message = remove_completed_download(protocol, bucket["client_cfg"], matched_id)
+                if not ok:
+                    logger.warning("Failed to remove adopted %s item %s: %s", protocol, matched_id, message)
+            moved_paths.extend(moved_item_paths)
+            continue
+        unmatched_count += 1
+    return moved_paths, unmatched_count
+
+
 def _check_completed(downloads, scan_cb=None, post_cb=None):
     _ensure_downloads_state_loaded()
     _restore_pending_from_active(downloads)
@@ -1238,14 +1343,7 @@ def _check_completed(downloads, scan_cb=None, post_cb=None):
     if not poll_targets:
         return
 
-    completed_by_protocol = {}
-    for protocol, client_cfg in poll_targets:
-        items = list_completed_downloads(protocol, client_cfg)
-        completed_by_protocol[protocol] = {
-            "client_cfg": client_cfg,
-            "items": items,
-            "matched_ids": set(),
-        }
+    completed_by_protocol = _load_completed_download_buckets(poll_targets)
     if not any(bucket["items"] for bucket in completed_by_protocol.values()):
         logger.info("No completed downloads detected for configured clients.")
         return
@@ -1258,54 +1356,18 @@ def _check_completed(downloads, scan_cb=None, post_cb=None):
             bucket = completed_by_protocol.get(protocol)
             if not bucket:
                 continue
-            match = _match_completed_item(info, bucket["items"])
-            if not match:
-                continue
-            _update_pending_live_metadata(info, item=match, status="completed")
-            move_info = _resolve_completed_update_info(info, match)
-            moved_result, move_reason = _move_completed_with_reason(match, move_info)
-            moved_match_paths = _coerce_moved_paths(moved_result)
+            moved_match_paths = _process_tracked_completed_item_locked(key, info, bucket)
             if not moved_match_paths:
-                logger.warning(
-                    "Matched completed download for pending key %s, but move failed. Keeping pending entry for retry: %s",
-                    key,
-                    move_reason or "unknown error",
-                )
-                _set_pending_stuck(info, move_reason or "move failed", live_item=match)
                 continue
-            matched_id = match.get("id") or match.get("hash")
-            if matched_id:
-                bucket["matched_ids"].add(matched_id)
-            _state["pending"].pop(key, None)
-            _state["completed"].add(key)
             moved_paths.extend(moved_match_paths)
-            if matched_id:
-                ok, message = remove_completed_download(protocol, bucket["client_cfg"], matched_id)
-                if not ok:
-                    logger.warning("Failed to remove completed %s item %s: %s", protocol, matched_id, message)
             newly_completed = True
         _persist_downloads_state_locked()
 
         for protocol, bucket in completed_by_protocol.items():
-            unmatched_count = 0
-            for item in bucket["items"]:
-                item_id = item.get("id") or item.get("hash")
-                if item_id and item_id in bucket["matched_ids"]:
-                    continue
-                if protocol == "torrent":
-                    unmatched_count += 1
-                    continue
-                moved_item_paths = _coerce_moved_paths(_adopt_untracked_completed_item(item))
-                if moved_item_paths:
-                    matched_id = item.get("id") or item.get("hash")
-                    if matched_id:
-                        ok, message = remove_completed_download(protocol, bucket["client_cfg"], matched_id)
-                        if not ok:
-                            logger.warning("Failed to remove adopted %s item %s: %s", protocol, matched_id, message)
-                    moved_paths.extend(moved_item_paths)
-                    newly_completed = True
-                    continue
-                unmatched_count += 1
+            moved_item_paths, unmatched_count = _process_untracked_completed_bucket_locked(protocol, bucket)
+            if moved_item_paths:
+                moved_paths.extend(moved_item_paths)
+                newly_completed = True
             if unmatched_count:
                 logger.info(
                     "Ignored %s completed %s download(s) not tracked by AeroFoil pending state.",

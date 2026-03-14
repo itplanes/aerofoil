@@ -403,7 +403,7 @@ class LibraryHelperTests(unittest.TestCase):
     @patch("app.app._run_post_library_change")
     @patch("app.app.post_library_change")
     @patch("app.app.delete_library_content")
-    def test_manage_delete_library_content_uses_async_post_change(
+    def test_manage_delete_library_content_uses_sync_post_change(
         self,
         delete_content_mock,
         post_library_change_mock,
@@ -427,7 +427,61 @@ class LibraryHelperTests(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(response.get_json()["success"])
-        post_library_change_mock.assert_called_once_with()
+        run_post_library_change_mock.assert_called_once_with()
+        post_library_change_mock.assert_not_called()
+
+    @patch("app.app._run_post_library_change")
+    @patch("app.app.delete_library_content")
+    def test_manage_delete_library_content_skips_sync_post_change_for_dry_run(
+        self,
+        delete_content_mock,
+        run_post_library_change_mock,
+    ):
+        delete_content_mock.return_value = {
+            "success": True,
+            "deleted": 1,
+            "skipped": 0,
+            "mutated": True,
+            "errors": [],
+            "details": [],
+        }
+
+        with flask_app.test_request_context(
+            "/api/manage/delete-library-content",
+            method="POST",
+            json={"scope": "title_cascade", "title_id": "0100AAAA00000000", "dry_run": True},
+        ):
+            response, status_code = manage_delete_library_content.__wrapped__()
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(response.get_json()["success"])
+        run_post_library_change_mock.assert_not_called()
+
+    @patch("app.app._run_post_library_change")
+    @patch("app.app.delete_library_content")
+    def test_manage_delete_library_content_skips_sync_post_change_when_not_mutated(
+        self,
+        delete_content_mock,
+        run_post_library_change_mock,
+    ):
+        delete_content_mock.return_value = {
+            "success": False,
+            "deleted": 0,
+            "skipped": 1,
+            "mutated": False,
+            "errors": ["Delete failed."],
+            "details": [],
+        }
+
+        with flask_app.test_request_context(
+            "/api/manage/delete-library-content",
+            method="POST",
+            json={"scope": "title_cascade", "title_id": "0100AAAA00000000"},
+        ):
+            response, status_code = manage_delete_library_content.__wrapped__()
+
+        self.assertEqual(status_code, 400)
+        self.assertFalse(response.get_json()["success"])
         run_post_library_change_mock.assert_not_called()
 
 
