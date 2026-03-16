@@ -204,8 +204,15 @@
         </div>
         <!-- Card size slider -->
         <div class="col-auto">
-            <!-- <label for="cardSizeRange" class="form-label">Card Size</label> -->
-            <input type="range" class="form-range" min="1" max="5" step="1" id="cardSizeRange">
+            <div class="d-flex align-items-center gap-2">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="cardSizeDecrease" aria-label="Smaller tiles">
+                    <i class="bi bi-dash-lg"></i>
+                </button>
+                <input type="range" class="form-range mb-0" min="1" max="5" step="1" id="cardSizeRange">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="cardSizeIncrease" aria-label="Larger tiles">
+                    <i class="bi bi-plus-lg"></i>
+                </button>
+            </div>
         </div>
         <div class="col-auto d-none" id="activeFiltersBar"></div>
     </div>
@@ -1072,12 +1079,12 @@
 
     function getColumnsForCardSize(size) {
         switch (size) {
-            case 1: return 1; // 2 columns
-            case 2: return 2; // 3 columns
-            case 3: return 3; // 4 columns
-            case 4: return 4; // 6 columns
-            case 5: return 6; // 8 columns
-            default: return 4; // default to 3 columns
+            case 1: return 6; // smallest cards
+            case 2: return 4;
+            case 3: return 3;
+            case 4: return 2;
+            case 5: return 1; // largest cards
+            default: return 3;
         }
     }
 
@@ -1225,7 +1232,10 @@
         const slider = $('#cardSizeRange');
         slider.attr('min', r.min);
         slider.attr('max', r.max);
-        slider.val(clampCardSizeForView(currentView, cardSize));
+        const clamped = clampCardSizeForView(currentView, cardSize);
+        slider.val(clamped);
+        $('#cardSizeDecrease').prop('disabled', clamped <= r.min || currentView === 'list');
+        $('#cardSizeIncrease').prop('disabled', clamped >= r.max || currentView === 'list');
     }
 
     function updatePaginationControls(nbDisplayedGames) {
@@ -1330,14 +1340,23 @@
         // Calculate the size of the icons based on the slider value.
         // Use distinct steps so adjacent settings are visually different.
         const iconSizes = {
-            1: 320,
-            2: 280,
+            1: 160,
+            2: 200,
             3: 240,
-            4: 200,
-            5: 160,
+            4: 280,
+            5: 320,
         };
         const iconSize = iconSizes[cardSize] || 240;
         $('#gameGrid').css('--icon-size', `${iconSize}px`);
+    }
+
+    function applyCurrentCardSize() {
+        applyCardSizeLimits();
+        if (currentView === 'icon') {
+            adjustIconSizes(cardSize);
+        } else if (currentView === 'card') {
+            adjustCardSizes(cardSize);
+        }
     }
 
     function saveFiltersToStorage() {
@@ -1574,12 +1593,21 @@
         $('#cardSizeRange').on('input', function () {
             cardSize = clampCardSizeForView(currentView, $(this).val());
             saveCardSizeForView(currentView, cardSize);
-            applyCardSizeLimits();
-            if (currentView === 'icon') {
-                adjustIconSizes(cardSize);
-            } else {
-                adjustCardSizes(cardSize);
-            }
+            applyCurrentCardSize();
+        });
+
+        $('#cardSizeDecrease').on('click', function () {
+            const r = getCardSizeRangeForView(currentView);
+            cardSize = Math.max(r.min, clampCardSizeForView(currentView, cardSize) - 1);
+            saveCardSizeForView(currentView, cardSize);
+            applyCurrentCardSize();
+        });
+
+        $('#cardSizeIncrease').on('click', function () {
+            const r = getCardSizeRangeForView(currentView);
+            cardSize = Math.min(r.max, clampCardSizeForView(currentView, cardSize) + 1);
+            saveCardSizeForView(currentView, cardSize);
+            applyCurrentCardSize();
         });
 
         // Event listener for view buttons
