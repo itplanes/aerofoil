@@ -812,7 +812,12 @@
 
             const cardOverlay = $('<div class="card-img-overlay game-info"></div>');
 
-            const title = $('<h5 class="card-title game-title"></h5>').text(getLibraryDisplayTitle(game));
+            const fullTitle = getLibraryDisplayTitle(game);
+            const title = $('<h5 class="card-title game-title"></h5>')
+                .text(fullTitle)
+                .attr('data-bs-toggle', 'tooltip')
+                .attr('data-bs-placement', 'top')
+                .attr('data-bs-title', fullTitle);
             cardOverlay.append(title);
 
             const description = $('<p class="card-text game-description"></p>');
@@ -936,14 +941,15 @@
                 .attr('data-bs-app-type', game.app_type);
             const cacheIconSrc = game.title_id ? `/api/shop/icon/${game.title_id}?size=web` : '';
             const iconFallback = '/static/placeholder-icon.svg';
-            const title = escapeHtml(getLibraryDisplayTitle(game));
+            const fullTitle = getLibraryDisplayTitle(game);
+            const title = escapeHtml(fullTitle);
             const parts = splitGenres(getGameGenre(game));
             const genre = escapeHtml(parts.length > 3 ? `${parts.slice(0, 3).join(', ')}...` : parts.join(', '));
 
             iconBtn.html(`
                 <div class="discover-tile-body">
                     <img class="library-icon-img" src="${cacheIconSrc || iconFallback}" alt="">
-                    <div class="discover-tile-title">${title}</div>
+                    <div class="discover-tile-title" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="${title}">${title}</div>
                     <div class="discover-tile-subtitle">${genre}</div>
                 </div>
             `);
@@ -1032,7 +1038,7 @@
             const row = $(`
                 <tr>
                     <td>
-                        <div class="fw-semibold">${title}</div>
+                        <div class="fw-semibold" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="${escapeHtml(title)}">${title}</div>
                         <div class="text-muted small">${subtitle}</div>
                     </td>
                     <td class="text-muted small">${escapeHtml(splitGenres(getGameGenre(game)).join(', ')) || '-'}</td>
