@@ -3331,6 +3331,7 @@ def _trim_download_search_results(results, limit=50):
             'protocol': r.get('protocol'),
             'age_minutes': r.get('age_minutes'),
             'age_label': r.get('age_label'),
+            'published_at': r.get('published_at'),
         }
         for r in (results or [])[:limit]
     ]

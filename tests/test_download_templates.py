@@ -10,11 +10,13 @@ class DownloadTemplateRegressionTests(unittest.TestCase):
         content = (REPO_ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("function buildDownloadSearchRow(item, actionLabel, extraData = {}) {", content)
+        self.assertIn("function formatPublishedAtTooltip(publishedAt) {", content)
         self.assertIn("function renderDownloadSearchResults(result, actionLabel, buildExtraData) {", content)
         self.assertIn("function runDetailsDownloadSearch({ button, statusMessage = 'Searching Prowlarr...', request, actionLabel, buildExtraData }) {", content)
         self.assertIn("const row = $('<tr></tr>');", content)
         self.assertIn("row.append($('<td></td>').text(item?.title || '-'));", content)
         self.assertIn("row.append($('<td></td>').text(item?.indexer || '-'));", content)
+        self.assertIn("const ageTooltip = formatPublishedAtTooltip(item?.published_at);", content)
         self.assertIn("button.attr('data-download-url', String(item?.download_url || ''));", content)
         self.assertIn("renderDownloadSearchResults(result, actionLabel, buildExtraData);", content)
         self.assertNotIn("return `<tr>${cells.join('')}</tr>`;", content)

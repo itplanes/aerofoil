@@ -141,6 +141,18 @@
     return value || '-';
   }
 
+  function formatPublishedAtTooltip(publishedAt) {
+    const text = String(publishedAt || '').trim();
+    if (!text) {
+      return '';
+    }
+    const date = new Date(text);
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+    return `Published ${date.toLocaleString()}`;
+  }
+
   function buildRequestDownloadSearchRow(item) {
     const cells = [
       `<td>${escapeHtml(item.title || '-')}</td>`,
@@ -150,7 +162,9 @@
       cells.push(`<td>${escapeHtml(getProtocolLabel(item.protocol))}</td>`);
     }
     if (downloadUiVisibility.show_usenet_columns) {
-      cells.push(`<td>${escapeHtml(item.age_label || '-')}</td>`);
+      const ageTooltip = formatPublishedAtTooltip(item.published_at);
+      const tooltipAttr = ageTooltip ? ` title="${escapeHtml(ageTooltip)}"` : '';
+      cells.push(`<td${tooltipAttr}>${escapeHtml(item.age_label || '-')}</td>`);
     }
     cells.push(`<td>${formatBytes(item.size)}</td>`);
     if (downloadUiVisibility.show_torrent_columns) {
