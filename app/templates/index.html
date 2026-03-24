@@ -614,13 +614,13 @@
     }
 
     function getGameTitle(game) {
-        return (game && (game.title_id_name || game.name || game.title_id || game.app_id)) || '';
+        return (game && (game.title_id_name || game.title_name || game.name || game.title_id || game.app_id)) || '';
     }
 
     function getLibraryDisplayTitle(game) {
         const appType = String((game && game.app_type) || '').toUpperCase();
-        const baseTitle = String((game && (game.title_id_name || game.title_id || game.app_id)) || '').trim();
-        const contentTitle = String((game && (game.name || game.app_id || game.title_id)) || '').trim();
+        const baseTitle = String((game && (game.title_id_name || game.title_name || game.name || game.title_id || game.app_id)) || '').trim();
+        const contentTitle = String((game && (game.name || game.title_name || game.app_id || game.title_id)) || '').trim();
         if (appType === 'DLC' && baseTitle && contentTitle && contentTitle !== baseTitle) {
             return `${baseTitle} | ${contentTitle}`;
         }

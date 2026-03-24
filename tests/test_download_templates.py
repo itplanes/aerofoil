@@ -29,6 +29,18 @@ class DownloadTemplateRegressionTests(unittest.TestCase):
         self.assertIn("statusMessage: `Searching Prowlarr for ${label}...`,", content)
         self.assertIn("bootstrap.Modal.getOrCreateInstance(document.getElementById('torrentSearchModal')).show();", content)
 
+    def test_discovery_tiles_prefer_title_names_over_ids(self):
+        content = (REPO_ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "const baseTitle = String((game && (game.title_id_name || game.title_name || game.name || game.title_id || game.app_id)) || '').trim();",
+            content,
+        )
+        self.assertIn(
+            "const contentTitle = String((game && (game.name || game.title_name || game.app_id || game.title_id)) || '').trim();",
+            content,
+        )
+
     def test_active_download_rows_use_safe_dom_construction(self):
         content = (REPO_ROOT / "app" / "templates" / "downloads.html").read_text(encoding="utf-8")
 
