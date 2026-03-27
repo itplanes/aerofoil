@@ -1874,7 +1874,8 @@
             const kind = String(item?.kind || "");
             return (
                 kind === "permanent_ip_blocked" ||
-                kind === "country_blocked"
+                kind === "country_blocked" ||
+                kind === "country_not_whitelisted"
             );
         });
         if (q) {

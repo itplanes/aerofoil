@@ -161,6 +161,19 @@
         align-items: center;
     }
 
+    .settings-flag-icon {
+        width: 16px;
+        height: 12px;
+        border-radius: 2px;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+        flex-shrink: 0;
+    }
+
+    .country-list-disabled {
+        opacity: 0.55;
+        filter: grayscale(25%);
+    }
+
     .settings-option-stack > * + * {
         margin-top: 0.9rem;
     }
@@ -729,16 +742,43 @@
                             </div>
                         </div>
                         <div>
-                            <label for="authPermanentIpBlacklistInput" class="form-label">Permanent IP blacklist</label>
-                            <textarea class="form-control font-monospace" id="authPermanentIpBlacklistInput" rows="4"
-                                placeholder="203.0.113.4&#10;198.51.100.0/24"></textarea>
+                            <label for="authPermanentIpBlacklistEntryInput" class="form-label">Permanent IP blacklist</label>
+                            <div class="input-group input-group-sm mb-2">
+                                <input type="text" class="form-control font-monospace" id="authPermanentIpBlacklistEntryInput"
+                                    autocomplete="off">
+                                <button type="button" class="btn btn-outline-secondary" id="addPermanentIpBlacklistEntryBtn">Add</button>
+                                <button type="button" class="btn btn-outline-secondary" id="clearPermanentIpBlacklistBtn">Clear all</button>
+                            </div>
+                            <div id="authPermanentIpBlacklistError" class="form-text text-danger d-none"></div>
+                            <div id="authPermanentIpBlacklistList" class="d-flex flex-wrap gap-2 mb-2"></div>
+                            <textarea class="form-control font-monospace" id="authPermanentIpBlacklistBulkInput" rows="3"></textarea>
+                            <div class="mt-2 d-flex gap-2">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="addPermanentIpBlacklistBulkBtn">Add all from text</button>
+                            </div>
+                            <textarea class="d-none" id="authPermanentIpBlacklistInput" aria-hidden="true"></textarea>
                             <div class="form-text">One IP or CIDR per line. Blacklisted clients cannot authenticate.</div>
                         </div>
-                        <div class="mt-3">
-                            <label for="authBlockedCountryCodesInput" class="form-label">Blocked country codes</label>
-                            <textarea class="form-control font-monospace text-uppercase" id="authBlockedCountryCodesInput" rows="3"
-                                placeholder="CN&#10;RU"></textarea>
-                            <div class="form-text">One ISO country code per line. Matching requests are blocked at the edge.</div>
+                        <div class="mt-3" id="authBlockedCountrySection">
+                            <label for="authBlockedCountryCodeInput" class="form-label">Blocked countries</label>
+                            <div class="input-group input-group-sm mb-2">
+                                <input type="text" class="form-control font-monospace text-uppercase" id="authBlockedCountryCodeInput"
+                                    maxlength="2" autocomplete="off">
+                                <button type="button" class="btn btn-outline-secondary" id="addBlockedCountryCodeBtn">Add</button>
+                            </div>
+                            <div id="authBlockedCountryCodesList" class="d-flex flex-wrap gap-2 mb-2"></div>
+                            <textarea class="d-none" id="authBlockedCountryCodesInput" aria-hidden="true"></textarea>
+                            <div id="authBlockedCountryDisabledHint" class="form-text d-none"></div>
+                        </div>
+                        <div class="mt-3" id="authAllowedCountrySection">
+                            <label for="authAllowedCountryCodeInput" class="form-label">Allowed countries (whitelist)</label>
+                            <div class="input-group input-group-sm mb-2">
+                                <input type="text" class="form-control font-monospace text-uppercase" id="authAllowedCountryCodeInput"
+                                    maxlength="2" autocomplete="off">
+                                <button type="button" class="btn btn-outline-secondary" id="addAllowedCountryCodeBtn">Add</button>
+                            </div>
+                            <div id="authAllowedCountryCodesList" class="d-flex flex-wrap gap-2 mb-2"></div>
+                            <textarea class="d-none" id="authAllowedCountryCodesInput" aria-hidden="true"></textarea>
+                            <div id="authAllowedCountryDisabledHint" class="form-text d-none"></div>
                         </div>
                     </div>
                 </div>
@@ -1081,6 +1121,9 @@
     let settingsNoticeModal = null;
     let settingsNoticeQueue = [];
     let activeSettingsNoticeKey = null;
+    let permanentIpBlacklistState = [];
+    let blockedCountryCodesState = [];
+    let allowedCountryCodesState = [];
     const SETTINGS_NOTICE_SUPPRESS_KEY = 'aerofoil.settings.notice.suppressed';
 
     const initialSettingsFlags = {
@@ -1747,8 +1790,9 @@
             auth_ip_lockout_threshold: threshold,
             auth_ip_lockout_window_seconds: windowSeconds,
             auth_ip_lockout_duration_seconds: durationSeconds,
-            auth_permanent_ip_blacklist: parseIpEntryList(getInputVal("authPermanentIpBlacklistInput")),
-            auth_blocked_country_codes: parseCountryCodeList(getInputVal("authBlockedCountryCodesInput")),
+            auth_permanent_ip_blacklist: (permanentIpBlacklistState || []).slice(),
+            auth_blocked_country_codes: (blockedCountryCodesState || []).slice(),
+            auth_allowed_country_codes: (allowedCountryCodesState || []).slice(),
             public_key: getInputVal("shopPublicKeyInput"),
             motd: $('#motdTextArea').val(),
         }
@@ -1818,6 +1862,190 @@
         return out;
     }
 
+    function normalizeIpv4Address(value) {
+        const parts = String(value || '').trim().split('.');
+        if (parts.length !== 4) {
+            return '';
+        }
+        const out = [];
+        for (const part of parts) {
+            if (!/^\d{1,3}$/.test(part)) {
+                return '';
+            }
+            const n = Number(part);
+            if (!Number.isInteger(n) || n < 0 || n > 255) {
+                return '';
+            }
+            out.push(String(n));
+        }
+        return out.join('.');
+    }
+
+    function isValidIpv6Address(value) {
+        const text = String(value || '').trim().toLowerCase();
+        if (!text || text.indexOf(':') < 0 || /[^0-9a-f:.]/.test(text) || text.includes(':::')) {
+            return false;
+        }
+        const doubleCount = (text.match(/::/g) || []).length;
+        if (doubleCount > 1) {
+            return false;
+        }
+        const parts = text.split(':');
+        for (let i = 0; i < parts.length; i += 1) {
+            const part = parts[i];
+            if (!part) {
+                continue;
+            }
+            if (part.includes('.')) {
+                if (i !== parts.length - 1 || !normalizeIpv4Address(part)) {
+                    return false;
+                }
+                continue;
+            }
+            if (!/^[0-9a-f]{1,4}$/.test(part)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function normalizeIpEntryToken(value) {
+        const raw = String(value || '').trim();
+        if (!raw) {
+            return { ok: false, token: '', error: 'Enter an IP or CIDR value.' };
+        }
+        const slash = raw.indexOf('/');
+        let address = raw;
+        let prefix = null;
+        if (slash >= 0) {
+            address = raw.slice(0, slash).trim();
+            const prefixRaw = raw.slice(slash + 1).trim();
+            if (!/^\d+$/.test(prefixRaw)) {
+                return { ok: false, token: '', error: `Invalid CIDR prefix in "${raw}".` };
+            }
+            prefix = Number(prefixRaw);
+        }
+        const normalizedV4 = normalizeIpv4Address(address);
+        const isV6 = !normalizedV4 && isValidIpv6Address(address);
+        if (!normalizedV4 && !isV6) {
+            return { ok: false, token: '', error: `Invalid IP format: "${raw}".` };
+        }
+        if (prefix !== null) {
+            const maxPrefix = normalizedV4 ? 32 : 128;
+            if (!Number.isInteger(prefix) || prefix < 0 || prefix > maxPrefix) {
+                return { ok: false, token: '', error: `Invalid CIDR range in "${raw}".` };
+            }
+        }
+        const normalizedAddress = normalizedV4 || String(address || '').trim().toLowerCase();
+        const normalizedToken = prefix === null ? normalizedAddress : `${normalizedAddress}/${prefix}`;
+        return { ok: true, token: normalizedToken, error: '' };
+    }
+
+    function setPermanentIpBlacklistError(message) {
+        const el = $('#authPermanentIpBlacklistError');
+        if (message) {
+            el.text(message).removeClass('d-none');
+        } else {
+            el.text('').addClass('d-none');
+        }
+    }
+
+    function renderPermanentIpBlacklistEntries() {
+        const container = $('#authPermanentIpBlacklistList');
+        container.empty();
+        if (!Array.isArray(permanentIpBlacklistState) || !permanentIpBlacklistState.length) {
+            container.append('<span class="text-muted small">No permanent IP blocks configured.</span>');
+            setInputVal('authPermanentIpBlacklistInput', '');
+            return;
+        }
+        permanentIpBlacklistState.forEach(token => {
+            const chip = $(`
+                <span class="badge text-bg-danger d-inline-flex align-items-center gap-2">
+                    <span class="font-monospace">${token}</span>
+                    <button type="button" class="btn-close btn-close-white btn-sm" aria-label="Remove ${token}"></button>
+                </span>
+            `);
+            chip.find('button').on('click', function () {
+                permanentIpBlacklistState = permanentIpBlacklistState.filter(item => item !== token);
+                renderPermanentIpBlacklistEntries();
+            });
+            container.append(chip);
+        });
+        setInputVal('authPermanentIpBlacklistInput', permanentIpBlacklistState.join('\n'));
+    }
+
+    function setPermanentIpBlacklistEntries(entries) {
+        const seen = new Set();
+        const out = [];
+        (Array.isArray(entries) ? entries : []).forEach(raw => {
+            const normalized = normalizeIpEntryToken(raw);
+            if (!normalized.ok) {
+                return;
+            }
+            const key = normalized.token.toLowerCase();
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            out.push(normalized.token);
+        });
+        permanentIpBlacklistState = out;
+        renderPermanentIpBlacklistEntries();
+        setPermanentIpBlacklistError('');
+    }
+
+    function addPermanentIpBlacklistEntry(value) {
+        const normalized = normalizeIpEntryToken(value);
+        if (!normalized.ok) {
+            setPermanentIpBlacklistError(normalized.error);
+            return false;
+        }
+        const exists = permanentIpBlacklistState.some(item => item.toLowerCase() === normalized.token.toLowerCase());
+        if (exists) {
+            setPermanentIpBlacklistError('Entry already exists.');
+            return false;
+        }
+        permanentIpBlacklistState.push(normalized.token);
+        setPermanentIpBlacklistError('');
+        renderPermanentIpBlacklistEntries();
+        return true;
+    }
+
+    function addPermanentIpBlacklistEntryFromInput() {
+        const input = $('#authPermanentIpBlacklistEntryInput');
+        const value = String(input.val() || '');
+        const ok = addPermanentIpBlacklistEntry(value);
+        if (ok) {
+            input.val('');
+        }
+    }
+
+    function addPermanentIpBlacklistEntriesFromBulk() {
+        const bulk = String(getInputVal('authPermanentIpBlacklistBulkInput') || '');
+        const parts = bulk.replaceAll('\r', '\n').replaceAll(',', '\n').split('\n');
+        let added = 0;
+        let firstError = '';
+        parts.forEach(raw => {
+            const token = String(raw || '').trim();
+            if (!token) {
+                return;
+            }
+            const before = permanentIpBlacklistState.length;
+            const ok = addPermanentIpBlacklistEntry(token);
+            if (ok && permanentIpBlacklistState.length > before) {
+                added += 1;
+            } else if (!ok && !firstError) {
+                firstError = $('#authPermanentIpBlacklistError').text();
+            }
+        });
+        if (added > 0) {
+            setInputVal('authPermanentIpBlacklistBulkInput', '');
+            setPermanentIpBlacklistError('');
+        } else if (firstError) {
+            setPermanentIpBlacklistError(firstError);
+        }
+    }
+
     function parseCountryCodeList(value) {
         if (!value) {
             return [];
@@ -1836,6 +2064,163 @@
             out.push(token);
         });
         return out;
+    }
+
+    function normalizeCountryCodeToken(value) {
+        const token = String(value || '').trim().toUpperCase();
+        if (!/^[A-Z]{2}$/.test(token)) {
+            return '';
+        }
+        return token;
+    }
+
+    function setCountryListUiState(sectionId, inputId, buttonId, hintId, disabled, hintText) {
+        const section = $(sectionId);
+        const input = $(inputId);
+        const button = $(buttonId);
+        const hint = $(hintId);
+        section.toggleClass('country-list-disabled', !!disabled);
+        input.prop('disabled', !!disabled);
+        button.prop('disabled', !!disabled);
+        if (disabled && hintText) {
+            hint.text(hintText).removeClass('d-none');
+        } else {
+            hint.text('').addClass('d-none');
+        }
+    }
+
+    function syncCountryListMode() {
+        const hasBlocked = Array.isArray(blockedCountryCodesState) && blockedCountryCodesState.length > 0;
+        const hasAllowed = Array.isArray(allowedCountryCodesState) && allowedCountryCodesState.length > 0;
+        const disableBlocked = hasAllowed && !hasBlocked;
+        const disableAllowed = hasBlocked && !hasAllowed;
+
+        setCountryListUiState(
+            '#authBlockedCountrySection',
+            '#authBlockedCountryCodeInput',
+            '#addBlockedCountryCodeBtn',
+            '#authBlockedCountryDisabledHint',
+            disableBlocked,
+            'Blocked list is disabled while whitelist has entries.'
+        );
+        setCountryListUiState(
+            '#authAllowedCountrySection',
+            '#authAllowedCountryCodeInput',
+            '#addAllowedCountryCodeBtn',
+            '#authAllowedCountryDisabledHint',
+            disableAllowed,
+            'Whitelist is disabled while blocked list has entries.'
+        );
+    }
+
+    function renderBlockedCountryCodes() {
+        const container = $('#authBlockedCountryCodesList');
+        container.empty();
+        if (!Array.isArray(blockedCountryCodesState) || !blockedCountryCodesState.length) {
+            container.append('<span class="text-muted small">No blocked countries configured.</span>');
+            syncCountryListMode();
+            return;
+        }
+
+        blockedCountryCodesState.forEach(code => {
+            const lower = code.toLowerCase();
+            const chip = $(`
+                <span class="badge text-bg-secondary d-inline-flex align-items-center gap-2">
+                    <img src="https://cdn.jsdelivr.net/npm/flag-icons@7.2.3/flags/4x3/${lower}.svg" alt="" class="settings-flag-icon" loading="lazy" />
+                    <span class="font-monospace">${code}</span>
+                    <button type="button" class="btn-close btn-close-white btn-sm" aria-label="Remove ${code}"></button>
+                </span>
+            `);
+            chip.find('button').on('click', function () {
+                blockedCountryCodesState = blockedCountryCodesState.filter(item => item !== code);
+                setInputVal('authBlockedCountryCodesInput', blockedCountryCodesState.join('\n'));
+                renderBlockedCountryCodes();
+            });
+            container.append(chip);
+        });
+        syncCountryListMode();
+    }
+
+    function setBlockedCountryCodes(codes) {
+        blockedCountryCodesState = parseCountryCodeList(
+            Array.isArray(codes) ? codes.join('\n') : String(codes || '')
+        );
+        setInputVal('authBlockedCountryCodesInput', blockedCountryCodesState.join('\n'));
+        renderBlockedCountryCodes();
+    }
+
+    function addBlockedCountryCodeFromInput() {
+        const input = $('#authBlockedCountryCodeInput');
+        if (input.prop('disabled')) {
+            return;
+        }
+        const code = normalizeCountryCodeToken(input.val());
+        input.val('');
+        if (!code) {
+            return;
+        }
+        if (blockedCountryCodesState.includes(code)) {
+            return;
+        }
+        blockedCountryCodesState.push(code);
+        blockedCountryCodesState.sort();
+        setInputVal('authBlockedCountryCodesInput', blockedCountryCodesState.join('\n'));
+        renderBlockedCountryCodes();
+    }
+
+    function renderAllowedCountryCodes() {
+        const container = $('#authAllowedCountryCodesList');
+        container.empty();
+        if (!Array.isArray(allowedCountryCodesState) || !allowedCountryCodesState.length) {
+            container.append('<span class="text-muted small">No whitelist countries configured.</span>');
+            syncCountryListMode();
+            return;
+        }
+
+        allowedCountryCodesState.forEach(code => {
+            const lower = code.toLowerCase();
+            const chip = $(`
+                <span class="badge text-bg-success d-inline-flex align-items-center gap-2">
+                    <img src="https://cdn.jsdelivr.net/npm/flag-icons@7.2.3/flags/4x3/${lower}.svg" alt="" class="settings-flag-icon" loading="lazy" />
+                    <span class="font-monospace">${code}</span>
+                    <button type="button" class="btn-close btn-close-white btn-sm" aria-label="Remove ${code}"></button>
+                </span>
+            `);
+            chip.find('button').on('click', function () {
+                allowedCountryCodesState = allowedCountryCodesState.filter(item => item !== code);
+                setInputVal('authAllowedCountryCodesInput', allowedCountryCodesState.join('\n'));
+                renderAllowedCountryCodes();
+            });
+            container.append(chip);
+        });
+        syncCountryListMode();
+    }
+
+    function setAllowedCountryCodes(codes) {
+        allowedCountryCodesState = parseCountryCodeList(
+            Array.isArray(codes) ? codes.join('\n') : String(codes || '')
+        );
+        setInputVal('authAllowedCountryCodesInput', allowedCountryCodesState.join('\n'));
+        renderAllowedCountryCodes();
+    }
+
+    function addAllowedCountryCodeFromInput() {
+        const input = $('#authAllowedCountryCodeInput');
+        if (input.prop('disabled')) {
+            return;
+        }
+        const code = normalizeCountryCodeToken(input.val());
+        input.val('');
+        if (!code) {
+            return;
+        }
+        if (allowedCountryCodesState.includes(code)) {
+            return;
+        }
+        allowedCountryCodesState.push(code);
+        allowedCountryCodesState.sort();
+        setInputVal('authAllowedCountryCodesInput', allowedCountryCodesState.join('\n'));
+        renderAllowedCountryCodes();
     }
 
     function formatIpEntryList(entries) {
@@ -2253,6 +2638,9 @@
         // Initialize settings navigation
         handleHashNavigation();
         getSettingsNoticeModal();
+        renderPermanentIpBlacklistEntries();
+        renderBlockedCountryCodes();
+        renderAllowedCountryCodes();
         if (!initialSettingsFlags.adminAccountCreated) {
             queueSettingsNotice('missingAdminAccount');
         }
@@ -2272,6 +2660,43 @@
         $('#shopPublicKeyCollapse').on('hide.bs.collapse', function () {
             const btn = $(this).closest('.mb-3').find('[data-bs-toggle="collapse"]');
             btn.html('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="vertical-align: -0.125em;"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg> Show');
+        });
+        $('#addPermanentIpBlacklistEntryBtn').on('click', function () {
+            addPermanentIpBlacklistEntryFromInput();
+        });
+        $('#clearPermanentIpBlacklistBtn').on('click', function () {
+            permanentIpBlacklistState = [];
+            setInputVal('authPermanentIpBlacklistBulkInput', '');
+            setPermanentIpBlacklistError('');
+            renderPermanentIpBlacklistEntries();
+        });
+        $('#addPermanentIpBlacklistBulkBtn').on('click', function () {
+            addPermanentIpBlacklistEntriesFromBulk();
+        });
+        $('#authPermanentIpBlacklistEntryInput').on('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addPermanentIpBlacklistEntryFromInput();
+            }
+        });
+
+        $('#addBlockedCountryCodeBtn').on('click', function () {
+            addBlockedCountryCodeFromInput();
+        });
+        $('#authBlockedCountryCodeInput').on('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addBlockedCountryCodeFromInput();
+            }
+        });
+        $('#addAllowedCountryCodeBtn').on('click', function () {
+            addAllowedCountryCodeFromInput();
+        });
+        $('#authAllowedCountryCodeInput').on('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addAllowedCountryCodeFromInput();
+            }
         });
 
         $.getJSON("/api/settings", function (result) {
@@ -2332,8 +2757,9 @@
             setInputVal("authIpLockoutThresholdInput", securitySettings['auth_ip_lockout_threshold'] || 5);
             setInputVal("authIpLockoutWindowInput", securitySettings['auth_ip_lockout_window_seconds'] || 600);
             setInputVal("authIpLockoutDurationInput", securitySettings['auth_ip_lockout_duration_seconds'] || 1800);
-            setInputVal("authPermanentIpBlacklistInput", formatIpEntryList(securitySettings['auth_permanent_ip_blacklist'] || []));
-            setInputVal("authBlockedCountryCodesInput", formatCountryCodeList(securitySettings['auth_blocked_country_codes'] || []));
+            setPermanentIpBlacklistEntries(securitySettings['auth_permanent_ip_blacklist'] || []);
+            setBlockedCountryCodes(securitySettings['auth_blocked_country_codes'] || []);
+            setAllowedCountryCodes(securitySettings['auth_allowed_country_codes'] || []);
             syncShopSecurityNotices(shopSettings);
             // Downloads settings
             downloadsSettings = result['downloads'] || {};

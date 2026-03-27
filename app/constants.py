@@ -67,6 +67,8 @@ DEFAULT_SETTINGS = {
         "auth_permanent_ip_blacklist": [],
         # ISO country codes (eg "US", "GB") to deny at request edge.
         "auth_blocked_country_codes": [],
+        # Optional ISO country whitelist. When set, only these countries are allowed.
+        "auth_allowed_country_codes": [],
     },
     "library": {
         "paths": ["/games"],

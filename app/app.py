@@ -1851,12 +1851,37 @@ def _block_permanent_blacklist_requests():
             for code in ((settings.get('security') or {}).get('auth_blocked_country_codes') or [])
             if str(code or '').strip()
         }
+        allowed_country_codes = {
+            str(code or '').strip().upper()
+            for code in ((settings.get('security') or {}).get('auth_allowed_country_codes') or [])
+            if str(code or '').strip()
+        }
         country_code = str(geo.get('country_code') or '').strip().upper()
         if blocked_country_codes and country_code and country_code in blocked_country_codes:
             try:
                 _log_access_dedup(
                     kind='country_blocked',
                     dedupe_key=f"{client_ip}|{request.path}|{country_code}",
+                    ok=False,
+                    status_code=404,
+                    filename=request.path,
+                    remote_addr=client_ip,
+                    user_agent=request.headers.get('User-Agent'),
+                    country=geo.get('country'),
+                    country_code=country_code,
+                    region=geo.get('region'),
+                    city=geo.get('city'),
+                    latitude=geo.get('latitude'),
+                    longitude=geo.get('longitude'),
+                )
+            except Exception:
+                pass
+            return Response(status=404)
+        if allowed_country_codes and country_code and country_code not in allowed_country_codes:
+            try:
+                _log_access_dedup(
+                    kind='country_not_whitelisted',
+                    dedupe_key=f"{client_ip}|{request.path}|{country_code}|allow",
                     ok=False,
                     status_code=404,
                     filename=request.path,
@@ -3755,6 +3780,7 @@ def set_shop_settings_api():
         'auth_ip_lockout_duration_seconds',
         'auth_permanent_ip_blacklist',
         'auth_blocked_country_codes',
+        'auth_allowed_country_codes',
     }
     shop_data = dict(data)
     security_data = {}

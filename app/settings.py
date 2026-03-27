@@ -486,6 +486,9 @@ def _normalize_security_settings(raw_security):
     merged['auth_blocked_country_codes'] = _normalize_country_codes(
         merged.get('auth_blocked_country_codes')
     )
+    merged['auth_allowed_country_codes'] = _normalize_country_codes(
+        merged.get('auth_allowed_country_codes')
+    )
     return merged
 
 def load_keys(key_file=KEYS_FILE):
@@ -621,6 +624,12 @@ def load_settings(force_reload=False):
             env_country_block = _read_env_csv('OWNFOIL_AUTH_BLOCKED_COUNTRY_CODES')
         if env_country_block is not None:
             settings['security']['auth_blocked_country_codes'] = env_country_block
+
+        env_country_allow = _read_env_csv('AEROFOIL_AUTH_ALLOWED_COUNTRY_CODES')
+        if env_country_allow is None:
+            env_country_allow = _read_env_csv('OWNFOIL_AUTH_ALLOWED_COUNTRY_CODES')
+        if env_country_allow is not None:
+            settings['security']['auth_allowed_country_codes'] = env_country_allow
 
         env_conversion_staging_dir = _resolve_env_conversion_staging_dir()
         if env_conversion_staging_dir is not None:

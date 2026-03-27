@@ -27,6 +27,12 @@ class SecuritySettingsCountryCodeTests(unittest.TestCase):
         })
         self.assertEqual(normalized["auth_blocked_country_codes"], ["CA", "MX", "JP"])
 
+    def test_normalize_security_settings_normalizes_allowed_country_codes(self):
+        normalized = _normalize_security_settings({
+            "auth_allowed_country_codes": [" mt ", "GB", "mt", "123", "G"],
+        })
+        self.assertEqual(normalized["auth_allowed_country_codes"], ["MT", "GB"])
+
 
 class CountryBlockingRequestTests(unittest.TestCase):
     @classmethod
@@ -99,6 +105,51 @@ class CountryBlockingRequestTests(unittest.TestCase):
 
         self.assertIsNone(response)
         self.assertFalse(geo_mock.called)
+        self.assertFalse(log_mock.called)
+
+    def test_before_request_blocks_when_country_not_in_allow_list(self):
+        settings = {"security": {"auth_allowed_country_codes": ["US"]}}
+        with flask_app.test_request_context(
+            "/",
+            method="GET",
+            environ_base={"REMOTE_ADDR": "203.0.113.44"},
+            headers={"User-Agent": "Example Agent"},
+        ):
+            with (
+                patch("app.app.load_settings", return_value=settings),
+                patch("app.app._get_auth_protection_config", return_value={"permanent_blacklist": []}),
+                patch("app.app._effective_client_ip", return_value="203.0.113.44"),
+                patch("app.app._is_permanently_blocked_ip", return_value=False),
+                patch("app.app._is_private_ip", return_value=False),
+                patch("app.app.lookup_geoip", return_value={"country": "Germany", "country_code": "DE"}),
+                patch("app.app._log_access_dedup") as log_mock,
+            ):
+                response = _block_permanent_blacklist_requests()
+
+        self.assertIsNotNone(response)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(log_mock.call_args.kwargs.get("kind"), "country_not_whitelisted")
+        self.assertEqual(log_mock.call_args.kwargs.get("country_code"), "DE")
+
+    def test_before_request_allows_when_country_in_allow_list(self):
+        settings = {"security": {"auth_allowed_country_codes": ["US"]}}
+        with flask_app.test_request_context(
+            "/",
+            method="GET",
+            environ_base={"REMOTE_ADDR": "203.0.113.45"},
+        ):
+            with (
+                patch("app.app.load_settings", return_value=settings),
+                patch("app.app._get_auth_protection_config", return_value={"permanent_blacklist": []}),
+                patch("app.app._effective_client_ip", return_value="203.0.113.45"),
+                patch("app.app._is_permanently_blocked_ip", return_value=False),
+                patch("app.app._is_private_ip", return_value=False),
+                patch("app.app.lookup_geoip", return_value={"country": "United States", "country_code": "US"}),
+                patch("app.app._log_access_dedup") as log_mock,
+            ):
+                response = _block_permanent_blacklist_requests()
+
+        self.assertIsNone(response)
         self.assertFalse(log_mock.called)
 
 
