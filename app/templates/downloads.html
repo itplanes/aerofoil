@@ -2,49 +2,62 @@
 {% block content %}
 {% include 'nav.html' %}
 
+<style>
+    .downloads-queue-card .card-body {
+        padding-bottom: 1.25rem;
+    }
+ </style>
+
 <div class="container-fluid setting-body">
     <div class="row">
         <div class="col">
             <div class="settings-container container mt-3">
-                <div class="d-flex flex-column flex-lg-row justify-content-between gap-2 align-items-lg-center mb-2">
+                <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
                     <div>
                         <h2 class="pb-2">Downloads</h2>
-                        <p class="text-muted mb-0">Live torrent status and pending AeroFoil download queue.</p>
+                        <p class="text-muted">Live torrent and usenet status plus the pending AeroFoil download queue.</p>
                     </div>
                 </div>
 
                 <div id="downloadsAlert" class="alert alert-info d-none mb-3" role="alert"></div>
 
                 <div class="row g-3">
-                    <div class="col-xl-8 col-lg-12">
+                    <div class="col-12">
                         <div class="card mb-3">
                             <div class="card-body">
                                 <div class="d-flex align-items-center justify-content-between mb-3">
                                     <div>
                                         <h5 class="card-title mb-1">Current Downloads</h5>
-                                        <div class="text-muted small">Active AeroFoil-managed torrents from your configured client.</div>
+                                        <div class="text-muted small">Active AeroFoil-managed downloads from your configured torrent and usenet clients.</div>
                                     </div>
                                     <button type="button" id="refreshActiveDownloadsBtn" class="btn btn-outline-primary btn-sm" onclick="loadActiveDownloads()">Refresh</button>
                                 </div>
+                                <div class="small text-muted mb-2" id="activeDownloadsSummary">Current download speed: -</div>
                                 <div class="table-responsive">
                                     <table class="table table-dark table-sm align-middle">
                                         <thead>
                                             <tr>
                                                 <th>Name</th>
+                                                {% if download_ui_visibility.show_protocol_column %}
+                                                <th>Protocol</th>
+                                                {% endif %}
+                                                <th>Client</th>
                                                 <th>Status</th>
                                                 <th>Progress</th>
+                                                {% if download_ui_visibility.show_torrent_columns %}
                                                 <th>Down</th>
                                                 <th>Up</th>
                                                 <th>Peers</th>
                                                 <th>Seeders</th>
                                                 <th>Leechers</th>
+                                                {% endif %}
                                                 <th>ETA</th>
                                                 <th>Size</th>
                                                 <th>Done</th>
                                             </tr>
                                         </thead>
                                         <tbody id="activeDownloadsBody">
-                                            <tr><td colspan="11" class="text-muted">Loading...</td></tr>
+                                            <tr><td colspan="{{ 9 + (1 if download_ui_visibility.show_protocol_column else 0) + (3 if download_ui_visibility.show_torrent_columns else 0) }}" class="text-muted">Loading...</td></tr>
                                         </tbody>
                                     </table>
                                 </div>
@@ -52,15 +65,30 @@
                         </div>
                     </div>
 
-                    <div class="col-xl-4 col-lg-12">
-                        <div class="card mb-3">
+                    <div class="col-12">
+                        <div class="card mb-3 downloads-queue-card">
                             <div class="card-body">
                                 <div class="d-flex align-items-center justify-content-between mb-2">
                                     <h5 class="card-title mb-0">Queue</h5>
                                     <button type="button" id="checkDownloadsBtn" class="btn btn-outline-primary btn-sm" onclick="checkCompletedDownloads()">Check completed</button>
                                 </div>
                                 <div class="small text-muted mb-2" id="downloadsQueueStatus">Loading...</div>
-                                <pre id="downloadsQueueList" class="mb-0" style="max-height: 280px; overflow: auto;"></pre>
+                                <div class="table-responsive mb-3">
+                                    <table class="table table-dark table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Title</th>
+                                                <th>Protocol</th>
+                                                <th>Client</th>
+                                                <th>State</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="downloadsQueueBody">
+                                            <tr><td colspan="5" class="text-muted">Loading...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -72,6 +100,11 @@
 
 <script>
     let downloadsPollTimer = null;
+    const downloadUiVisibility = {{ download_ui_visibility|tojson }};
+    const activeDownloadsColumnCount = 7
+        + (downloadUiVisibility.show_protocol_column ? 1 : 0)
+        + (downloadUiVisibility.show_torrent_columns ? 5 : 0);
+    const queueColumnCount = 5;
 
     function showDownloadsAlert(message, type = 'info') {
         const alertBox = $('#downloadsAlert');
@@ -109,10 +142,22 @@
         return `${s}s`;
     }
 
+    function formatQueueState(item) {
+        const state = String(item?.state || 'queued');
+        const reason = String(item?.state_reason || '');
+        if (state === 'stuck' && reason) {
+            return `stuck: ${reason}`;
+        }
+        return state;
+    }
+
     function loadQueueState() {
+        const body = $('#downloadsQueueBody');
+        body.html(`<tr><td colspan="${queueColumnCount}" class="text-muted">Loading...</td></tr>`);
         $.getJSON('/api/downloads/queue', function (result) {
             if (!result['success']) {
                 $('#downloadsQueueStatus').text('Failed to load queue state.');
+                body.html(`<tr><td colspan="${queueColumnCount}" class="text-danger">Failed to load queue state.</td></tr>`);
                 return;
             }
             const state = result['state'] || {};
@@ -120,47 +165,106 @@
             const running = state['running'] ? 'running' : 'idle';
             const lastRun = state['last_run'] ? new Date(state['last_run'] * 1000).toLocaleString() : 'never';
             $('#downloadsQueueStatus').text(`Status: ${running}. Last check: ${lastRun}. Pending: ${pending.length}.`);
+            body.empty();
             if (!pending.length) {
-                $('#downloadsQueueList').text('No pending downloads.');
+                body.html(`<tr><td colspan="${queueColumnCount}" class="text-muted">No pending downloads.</td></tr>`);
                 return;
             }
-            const lines = pending.map(item => `${item['title_id']} v${item['version']} | ${item['expected_name'] || ''} | ${item['hash'] || ''}`);
-            $('#downloadsQueueList').text(lines.join('\n'));
+            pending.forEach(item => {
+                const row = $('<tr></tr>');
+                row.append($('<td class="small"></td>').text((item['label'] || 'Manual download').toString()));
+                row.append($('<td class="small text-muted"></td>').text((item['protocol'] || '-').toString()));
+                row.append($('<td class="small text-muted"></td>').text((item['client_type'] || '-').toString()));
+                row.append($('<td class="small"></td>').text(formatQueueState(item)));
+                const actionCell = $('<td class="small"></td>');
+                const deleteButton = $('<button type="button" class="btn btn-outline-danger btn-sm"></button>').text('Delete');
+                deleteButton.prop('disabled', !item['deletable']);
+                deleteButton.attr('data-key', String(item['key'] || ''));
+                deleteButton.on('click', function () {
+                    deleteQueuedDownload(String(item['key'] || ''), deleteButton);
+                });
+                actionCell.append(deleteButton);
+                row.append(actionCell);
+                body.append(row);
+            });
+        });
+    }
+
+    function deleteQueuedDownload(key, button) {
+        if (!key) {
+            showDownloadsAlert('Missing queue key.', 'danger');
+            return;
+        }
+        if (!window.confirm('Delete this queued download and remove downloader files if possible?')) {
+            return;
+        }
+        button.prop('disabled', true);
+        $.ajax({
+            url: '/api/downloads/queue/delete',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ key }),
+            success: function (result) {
+                if (result['success']) {
+                    showDownloadsAlert(result['message'] || 'Removed queued download.', 'success');
+                } else {
+                    showDownloadsAlert(result['message'] || 'Failed to remove queued download.', 'danger');
+                }
+                loadQueueState();
+                loadActiveDownloads();
+            },
+            error: function () {
+                showDownloadsAlert('Failed to remove queued download.', 'danger');
+                loadQueueState();
+                loadActiveDownloads();
+            },
+            complete: function () {
+                button.prop('disabled', false);
+            }
         });
     }
 
     function loadActiveDownloads() {
         const body = $('#activeDownloadsBody');
-        body.html('<tr><td colspan="11" class="text-muted">Loading...</td></tr>');
+        $('#activeDownloadsSummary').text('Current download speed: -');
+        body.html(`<tr><td colspan="${activeDownloadsColumnCount}" class="text-muted">Loading...</td></tr>`);
         $.getJSON('/api/downloads/active', function (result) {
             if (!result['success']) {
                 const msg = result['message'] || 'Failed to load active downloads.';
-                body.html(`<tr><td colspan="11" class="text-danger">${msg}</td></tr>`);
+                const errorRow = $('<tr></tr>');
+                errorRow.append($(`<td colspan="${activeDownloadsColumnCount}" class="text-danger"></td>`).text(msg));
+                body.empty().append(errorRow);
+                $('#activeDownloadsSummary').text('Current download speed: -');
                 return;
             }
             const items = result['items'] || [];
+            const summary = result['summary'] || {};
+            $('#activeDownloadsSummary').text(`Current download speed: ${formatSpeed(summary['down_speed'])}`);
             if (!items.length) {
-                body.html('<tr><td colspan="11" class="text-muted">No active downloads.</td></tr>');
+                body.html(`<tr><td colspan="${activeDownloadsColumnCount}" class="text-muted">No active downloads.</td></tr>`);
                 return;
             }
             body.empty();
             items.forEach(item => {
                 const progress = Number(item['progress'] || 0);
-                const row = $(`
-                    <tr>
-                        <td class="small">${(item['name'] || '').toString()}</td>
-                        <td class="small text-muted">${(item['status'] || '').toString()}</td>
-                        <td class="small">${progress.toFixed(1)}%</td>
-                        <td class="small">${formatSpeed(item['down_speed'])}</td>
-                        <td class="small">${formatSpeed(item['up_speed'])}</td>
-                        <td class="small">${item['peers'] ?? '-'}</td>
-                        <td class="small">${item['seeders'] ?? '-'}</td>
-                        <td class="small">${item['leechers'] ?? '-'}</td>
-                        <td class="small">${formatEta(item['eta'])}</td>
-                        <td class="small">${formatBytes(item['size'])}</td>
-                        <td class="small">${formatBytes(item['downloaded'])}</td>
-                    </tr>
-                `);
+                const row = $('<tr></tr>');
+                row.append($('<td class="small"></td>').text((item['name'] || '').toString()));
+                if (downloadUiVisibility.show_protocol_column) {
+                    row.append($('<td class="small text-muted"></td>').text((item['protocol'] || '').toString() || '-'));
+                }
+                row.append($('<td class="small text-muted"></td>').text((item['client_type'] || '').toString() || '-'));
+                row.append($('<td class="small text-muted"></td>').text((item['status'] || '').toString()));
+                row.append($('<td class="small"></td>').text(`${progress.toFixed(1)}%`));
+                if (downloadUiVisibility.show_torrent_columns) {
+                    row.append($('<td class="small"></td>').text(formatSpeed(item['down_speed'])));
+                    row.append($('<td class="small"></td>').text(formatSpeed(item['up_speed'])));
+                    row.append($('<td class="small"></td>').text(item['peers'] ?? '-'));
+                    row.append($('<td class="small"></td>').text(item['seeders'] ?? '-'));
+                    row.append($('<td class="small"></td>').text(item['leechers'] ?? '-'));
+                }
+                row.append($('<td class="small"></td>').text(formatEta(item['eta'])));
+                row.append($('<td class="small"></td>').text(formatBytes(item['size'])));
+                row.append($('<td class="small"></td>').text(formatBytes(item['downloaded'])));
                 body.append(row);
             });
         });
@@ -208,4 +312,3 @@
     });
 </script>
 {% endblock %}
-

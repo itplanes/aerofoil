@@ -4,6 +4,7 @@
 {% block content %}
 {% include 'nav.html' %}
 <div id="content" class="container-fluid mt-3">
+    <div id="libraryAlert" class="alert d-none mb-3" role="alert"></div>
     <div class="grid-container mt-2 mb-3 discover-collapsed" id="discoverSection">
         <div class="d-flex gap-3 align-items-stretch mt-2 py-3 discover-columns">
             <div class="flex-fill">
@@ -50,86 +51,93 @@
         </div>
     </div>
 
-    <div class="row gy-2 gx-3 align-items-center justify-content-md-center mb-3">
+    <div class="row gy-2 gx-3 align-items-center justify-content-md-center mb-3" id="libraryFiltersRow">
 
         <div class="col-auto">
             <div class="btn-group dropdown-center" role="group">
                 <div class="btn-group" role="group">
                     <button id="filterDropdownBtn" type="button" class="btn btn-primary dropdown-toggle"
-                        data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-label="Filters">
                         <i class="bi bi-funnel-fill"></i>
+                        <span class="d-none d-sm-inline ms-2" id="filterDropdownBtnLabel">Filters</span>
+                        <span class="badge rounded-pill text-bg-light text-primary ms-2 d-none" id="filterDropdownBtnCount">0</span>
                     </button>
-                    <ul class="dropdown-menu">
-                        <li>
-                            <label class="form-check-label dropdown-item" for="filterCheckBase">
-                                <input class="form-check-input filterLabel" type="checkbox" value="" id="filterCheckBase">
-                                BASE
-                            </label>
+                    <ul class="dropdown-menu p-2" id="filterDropdownMenu" aria-labelledby="filterDropdownBtn" style="min-width: 18rem;">
+                        <li><h6 class="dropdown-header px-2">Type</h6></li>
+                        <li class="px-2 py-1">
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterType" value="" id="filterCheckTypeAll" checked>
+                                <label class="form-check-label" for="filterCheckTypeAll">All</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterType" value="BASE" id="filterCheckBase">
+                                <label class="form-check-label" for="filterCheckBase">Base Games</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterType" value="DLC" id="filterCheckDlc">
+                                <label class="form-check-label" for="filterCheckDlc">DLC</label>
+                            </div>
                         </li>
-                        <li>
-                            <label class="form-check-label dropdown-item" for="filterCheckDlc">
-                                <input class="form-check-input filterLabel" type="checkbox" value="" id="filterCheckDlc">
-                                DLC
-                            </label>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><h6 class="dropdown-header px-2">Ownership</h6></li>
+                        <li class="px-2 py-1">
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterOwnership" value="" id="filterCheckOwnershipAll" checked>
+                                <label class="form-check-label" for="filterCheckOwnershipAll">All</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterOwnership" value="owned" id="filterCheckOwned">
+                                <label class="form-check-label" for="filterCheckOwned">In Library</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterOwnership" value="missing" id="filterCheckMissing">
+                                <label class="form-check-label" for="filterCheckMissing">Missing</label>
+                            </div>
                         </li>
-                        <li>
-                            <hr class="dropdown-divider">
+                        <li><hr class="dropdown-divider"></li>
+                        <li><h6 class="dropdown-header px-2">Updates</h6></li>
+                        <li class="px-2 py-1">
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterUpdates" value="" id="filterCheckUpdatesAll" checked>
+                                <label class="form-check-label" for="filterCheckUpdatesAll">All</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterUpdates" value="up_to_date" id="filterCheckUpToDate">
+                                <label class="form-check-label" for="filterCheckUpToDate">Up to Date</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterUpdates" value="outdated" id="filterCheckMissingUpdate">
+                                <label class="form-check-label" for="filterCheckMissingUpdate">Update Available</label>
+                            </div>
                         </li>
-                        <li>
-                            <label class="form-check-label dropdown-item" for="filterCheckOwned">
-                                <input class="form-check-input filterLabel" type="checkbox" value="" id="filterCheckOwned">
-                                Owned
-                            </label>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><h6 class="dropdown-header px-2">DLC Coverage</h6></li>
+                        <li class="px-2 py-1">
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterCompletion" value="" id="filterCheckCompletionAll" checked>
+                                <label class="form-check-label" for="filterCheckCompletionAll">All</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterCompletion" value="complete" id="filterCheckComplete">
+                                <label class="form-check-label" for="filterCheckComplete">Complete</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterCompletion" value="missing_dlc" id="filterCheckMissingDlc">
+                                <label class="form-check-label" for="filterCheckMissingDlc">DLC Missing</label>
+                            </div>
                         </li>
-                        <li>
-                            <label class="form-check-label dropdown-item" for="filterCheckMissing">
-                                <input class="form-check-input filterLabel" type="checkbox" value="" id="filterCheckMissing">
-                                Missing
-                            </label>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><h6 class="dropdown-header px-2">Recognition</h6></li>
+                        <li class="px-2 py-1">
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterRecognition" value="" id="filterCheckRecognitionAll" checked>
+                                <label class="form-check-label" for="filterCheckRecognitionAll">All</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input library-filter-option" type="radio" name="filterRecognition" value="unrecognized" id="filterCheckUnrecognized">
+                                <label class="form-check-label" for="filterCheckUnrecognized">Unrecognized</label>
+                            </div>
                         </li>
-                        <li>
-                            <hr class="dropdown-divider">
-                        </li>
-                        <li>
-                            <label class="form-check-label dropdown-item" for="filterCheckUpToDate">
-                                <input class="form-check-input filterLabel" type="checkbox" value="" id="filterCheckUpToDate">
-                                Up to date
-                            </label>
-                        </li>
-                        <li>
-                            <label class="form-check-label dropdown-item" for="filterCheckMissingUpdate">
-                                <input class="form-check-input filterLabel" type="checkbox" value="" id="filterCheckMissingUpdate">
-                                Missing Update
-                            </label>
-                        </li>
-                        <li>
-                            <hr class="dropdown-divider">
-                        </li>
-                        <li>
-                            <label class="form-check-label dropdown-item" for="filterCheckComplete">
-                                <input class="form-check-input filterLabel" type="checkbox" value="" id="filterCheckComplete">
-                                Complete
-                            </label>
-                        </li>
-                        <li>
-                            <label class="form-check-label dropdown-item" for="filterCheckMissingDlc">
-                                <input class="form-check-input filterLabel" type="checkbox" value="" id="filterCheckMissingDlc">
-                                Missing DLC
-                            </label>
-                        </li>
-                        <li>
-                            <hr class="dropdown-divider">
-                        </li>
-                        <li>
-                            <label class="form-check-label dropdown-item" for="filterCheckUnrecognized">
-                                <input class="form-check-input filterLabel" type="checkbox" value="" id="filterCheckUnrecognized">
-                                Unrecognized
-                            </label>
-                        </li>
-                        <!-- <div class="text-center m-2">
-                            <button id="btnApplyFilters" type="button" class="btn btn-primary" style="width: 85%;">Apply
-                                filters</button>
-                        </div> -->
                     </ul>
                 </div>
             </div>
@@ -141,7 +149,7 @@
         {% if current_user.is_admin or admin_account_created == false %}
         <div class="col-auto">
             <div class="input-group">
-                <input type="text" id="torrentSearchInput" class="form-control" placeholder="Search torrents...">
+                <input type="text" id="torrentSearchInput" class="form-control" placeholder="Search downloads...">
                 <button class="btn btn-warning" type="button" id="torrentSearchBtn">Search</button>
             </div>
         </div>
@@ -203,9 +211,20 @@
         </div>
         <!-- Card size slider -->
         <div class="col-auto">
-            <!-- <label for="cardSizeRange" class="form-label">Card Size</label> -->
-            <input type="range" class="form-range" min="1" max="5" step="1" id="cardSizeRange">
+            <div class="d-flex align-items-center gap-2">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="cardSizeDecrease" aria-label="Smaller tiles">
+                    <i class="bi bi-dash-lg"></i>
+                </button>
+                <input type="range" class="form-range mb-0" min="1" max="5" step="1" id="cardSizeRange">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="cardSizeIncrease" aria-label="Larger tiles">
+                    <i class="bi bi-plus-lg"></i>
+                </button>
+            </div>
         </div>
+    </div>
+
+    <div class="d-flex justify-content-md-center mb-3" id="activeFiltersRow" style="min-height: 2.5rem;">
+        <div class="d-none" id="activeFiltersBar"></div>
     </div>
 
     <div class="grid-container" id="gridContainer">
@@ -235,6 +254,22 @@
                 <div class="mb-3" id="detailsMeta"></div>
                 <div id="detailsVersions"></div>
                 <div id="detailsDownloadStatus" class="small text-muted mt-2"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="detailsDeleteConfirmModal" tabindex="-1" aria-labelledby="detailsDeleteConfirmModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="detailsDeleteConfirmModalLabel">Confirm delete</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="detailsDeleteConfirmModalBody">...</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="detailsDeleteConfirmBtn">Delete</button>
             </div>
         </div>
     </div>
@@ -308,10 +343,10 @@
 
 {% if current_user.is_admin or admin_account_created == false %}
 <div class="modal fade" id="torrentSearchModal" tabindex="-1" aria-labelledby="torrentSearchModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
-                <h1 class="modal-title fs-5" id="torrentSearchModalLabel">Torrent search results</h1>
+                <h1 class="modal-title fs-5" id="torrentSearchModalLabel">Download search results</h1>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
@@ -321,9 +356,18 @@
                         <thead>
                             <tr>
                                 <th scope="col">Title</th>
+                                <th scope="col">Indexer</th>
+                                {% if download_ui_visibility.show_protocol_column %}
+                                <th scope="col">Protocol</th>
+                                {% endif %}
+                                {% if download_ui_visibility.show_usenet_columns %}
+                                <th scope="col">Age</th>
+                                {% endif %}
                                 <th scope="col">Size</th>
+                                {% if download_ui_visibility.show_torrent_columns %}
                                 <th scope="col">Seeders</th>
                                 <th scope="col">Leechers</th>
+                                {% endif %}
                                 <th scope="col">Action</th>
                             </tr>
                         </thead>
@@ -348,10 +392,124 @@
     let currentView = 'card'; // Default view is 'card'
     let currentSort = 'title_asc';
     let selectedGenre = '';
+    let fetchGamesRequest = null;
+    let fetchGamesSeq = 0;
+    let searchDebounceTimer = null;
+    const SEARCH_DEBOUNCE_MS = 250;
+    const FILTER_GROUPS = {
+        type: {
+            inputName: 'filterType',
+            allSelector: '#filterCheckTypeAll',
+            options: {
+                BASE: '#filterCheckBase',
+                DLC: '#filterCheckDlc',
+            },
+            chipPrefix: 'Type',
+            labels: {
+                BASE: 'Base Games',
+                DLC: 'DLC',
+            },
+        },
+        ownership: {
+            inputName: 'filterOwnership',
+            allSelector: '#filterCheckOwnershipAll',
+            options: {
+                owned: '#filterCheckOwned',
+                missing: '#filterCheckMissing',
+            },
+            chipPrefix: 'Ownership',
+            labels: {
+                owned: 'In Library',
+                missing: 'Missing',
+            },
+        },
+        updates: {
+            inputName: 'filterUpdates',
+            allSelector: '#filterCheckUpdatesAll',
+            options: {
+                up_to_date: '#filterCheckUpToDate',
+                outdated: '#filterCheckMissingUpdate',
+            },
+            chipPrefix: 'Updates',
+            labels: {
+                up_to_date: 'Up to Date',
+                outdated: 'Update Available',
+            },
+        },
+        completion: {
+            inputName: 'filterCompletion',
+            allSelector: '#filterCheckCompletionAll',
+            options: {
+                complete: '#filterCheckComplete',
+                missing_dlc: '#filterCheckMissingDlc',
+            },
+            chipPrefix: 'DLC Coverage',
+            labels: {
+                complete: 'Complete',
+                missing_dlc: 'DLC Missing',
+            },
+        },
+        recognition: {
+            inputName: 'filterRecognition',
+            allSelector: '#filterCheckRecognitionAll',
+            options: {
+                unrecognized: '#filterCheckUnrecognized',
+            },
+            chipPrefix: 'Recognition',
+            labels: {
+                unrecognized: 'Unrecognized',
+            },
+        },
+    };
+    const LEGACY_FILTER_VALUE_MAP = {
+        type: {
+            BASE: 'BASE',
+            DLC: 'DLC',
+        },
+        ownership: {
+            Owned: 'owned',
+            Missing: 'missing',
+            owned: 'owned',
+            missing: 'missing',
+        },
+        updates: {
+            'Up to date': 'up_to_date',
+            'Up to Date': 'up_to_date',
+            Outdated: 'outdated',
+            up_to_date: 'up_to_date',
+            outdated: 'outdated',
+        },
+        completion: {
+            Complete: 'complete',
+            'Missing DLC': 'missing_dlc',
+            complete: 'complete',
+            missing_dlc: 'missing_dlc',
+        },
+        recognition: {
+            Unrecognized: 'unrecognized',
+            unrecognized: 'unrecognized',
+        },
+    };
+    const activeFilters = {
+        type: '',
+        ownership: '',
+        updates: '',
+        completion: '',
+        recognition: '',
+    };
     const canManageDownloads = {{ 'true' if current_user.is_admin or admin_account_created == false else 'false' }};
     const canManageManualTitleInfo = {{ 'true' if current_user.is_admin or admin_account_created == false else 'false' }};
+    const downloadUiVisibility = {{ download_ui_visibility|tojson }};
     let gameInfoCurrentTitleId = '';
     let gameInfoCurrentGame = null;
+    let currentDetailsContext = null;
+
+    function showLibraryAlert(message, type = 'info') {
+        const alertBox = $('#libraryAlert');
+        alertBox.removeClass('d-none alert-info alert-success alert-warning alert-danger');
+        alertBox.addClass(`alert-${type}`);
+        alertBox.text(message || '');
+    }
 
     function buildTitlesQuery() {
         const params = new URLSearchParams();
@@ -367,52 +525,87 @@
         if (selectedGenre) {
             params.set('genre', selectedGenre);
         }
-        if (activeTypeFilters.size > 0) {
-            params.set('types', Array.from(activeTypeFilters).join(','));
+        if (activeFilters.type) {
+            params.set('types', activeFilters.type);
         } else if (currentView === 'icon') {
             // Icon view defaults to base titles so pagination matches visible items.
             params.set('types', 'BASE');
         }
-        if (activeOwnershipFilters.size === 1) {
-            params.set('owned', activeOwnershipFilters.has('Owned') ? 'owned' : 'missing');
+        if (activeFilters.ownership) {
+            params.set('owned', activeFilters.ownership);
         }
-        if (activeUpdateFilters.size === 1) {
-            params.set('updates', activeUpdateFilters.has('Up to date') ? 'up_to_date' : 'outdated');
+        if (activeFilters.updates) {
+            params.set('updates', activeFilters.updates);
         }
-        if (activeCompletionFilters.size === 1) {
-            params.set('completion', activeCompletionFilters.has('Complete') ? 'complete' : 'missing_dlc');
+        if (activeFilters.completion) {
+            params.set('completion', activeFilters.completion);
         }
-        if (activeRecognitionFilters.size === 1) {
-            params.set('recognized', activeRecognitionFilters.has('Unrecognized') ? 'unrecognized' : 'all');
+        if (activeFilters.recognition) {
+            params.set('recognized', activeFilters.recognition);
         }
         return params.toString();
     }
 
     function fetchGames() {
+        const requestSeq = ++fetchGamesSeq;
+        if (fetchGamesRequest && fetchGamesRequest.readyState !== 4) {
+            try {
+                fetchGamesRequest.abort();
+            } catch (e) {
+                // no-op
+            }
+        }
+
         return new Promise((resolve, reject) => {
-            $.get(`/api/titles?${buildTitlesQuery()}`, function (data) {
+            fetchGamesRequest = $.get(`/api/titles?${buildTitlesQuery()}`, function (data) {
+                if (requestSeq !== fetchGamesSeq) {
+                    resolve(false);
+                    return;
+                }
                 totalGames = data.total || 0;
                 games = data.games || [];
                 filteredGames = games;
                 availableGenres = data.genres || [];
                 discoverySections = data.discovery || null;
-                resolve();
-            }).fail(function() {
+                resolve(true);
+            }).fail(function(xhr, status) {
+                if (status === 'abort') {
+                    resolve(false);
+                    return;
+                }
                 reject();
+            }).always(function () {
+                if (requestSeq === fetchGamesSeq) {
+                    fetchGamesRequest = null;
+                }
             });
         });
     }
 
-    function refreshGames(resetPage = false) {
+    function scrollToResults() {
+        const target = document.getElementById('libraryFiltersRow') || document.getElementById('gridContainer');
+        if (!target) return;
+        const top = target.getBoundingClientRect().top;
+        if (top > 24) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
+
+    function refreshGames(resetPage = false, scrollToGrid = false) {
         if (resetPage) {
             currentPage = 1;
         }
         showLoadingPlaceholders();
         return fetchGames()
-            .then(() => {
+            .then((hasData) => {
+                if (!hasData) {
+                    return;
+                }
                 populateGenreDropdown();
                 renderGames();
-                updatePaginationControls(totalGames);
+                if (scrollToGrid) {
+                    scrollToResults();
+                }
             })
             .catch(() => {});
     }
@@ -532,7 +725,27 @@
     }
 
     function getGameTitle(game) {
-        return (game && (game.title_id_name || game.name || game.title_id || game.app_id)) || '';
+        return (game && (game.title_id_name || game.title_name || game.name || game.title_id || game.app_id)) || '';
+    }
+
+    function getLibraryDisplayTitle(game) {
+        const appType = String((game && game.app_type) || '').toUpperCase();
+        const baseTitle = String((game && (game.title_id_name || game.title_name || game.name || game.title_id || game.app_id)) || '').trim();
+        const contentTitle = String((game && (game.name || game.title_name || game.app_id || game.title_id)) || '').trim();
+        if (appType === 'DLC' && baseTitle && contentTitle && contentTitle !== baseTitle) {
+            return `${baseTitle} | ${contentTitle}`;
+        }
+        return baseTitle || contentTitle;
+    }
+
+    function getLibraryDisplaySubtitle(game) {
+        const appType = String((game && game.app_type) || '').toUpperCase();
+        const baseTitle = String((game && (game.title_id_name || game.title_id || game.app_id)) || '').trim();
+        const contentTitle = String((game && (game.name || game.app_id || game.title_id)) || '').trim();
+        if (appType === 'DLC' && baseTitle && contentTitle && contentTitle !== baseTitle) {
+            return `${game.title_id || ''}`.trim();
+        }
+        return `${game.title_id || ''}`.trim();
     }
 
     function getGameGenre(game) {
@@ -572,18 +785,6 @@
         // Sorting is handled server-side via /api/titles.
     }
 
-    function shouldShowDiscovery() {
-        const searchText = ($('#textFilter').val() || '').trim();
-        if (searchText) return false;
-        return (
-            activeTypeFilters.size === 0 &&
-            activeOwnershipFilters.size === 0 &&
-            activeUpdateFilters.size === 0 &&
-            activeCompletionFilters.size === 0 &&
-            activeRecognitionFilters.size === 0
-        );
-    }
-
     function hashStringToInt32(str) {
         // FNV-1a 32-bit
         let h = 0x811c9dc5;
@@ -601,6 +802,90 @@
         return div.innerHTML;
     }
 
+    function getLibraryStatusDescriptors(game, options = {}) {
+        const descriptors = [];
+        const appType = String((game && game.app_type) || '').toUpperCase();
+        const includeBaseStatus = options.includeBaseStatus === true;
+        const includeDlcUpdateStatus = options.includeDlcUpdateStatus === true;
+        const includeDlcCoverage = game?.has_all_dlcs !== undefined
+            && (appType === 'BASE' || (Array.isArray(game?.dlc_list) && game.dlc_list.length > 0));
+
+        if (game?.owned !== undefined) {
+            descriptors.push({
+                key: 'ownership',
+                label: game.owned ? 'In Library' : 'Missing',
+                tone: game.owned ? 'success' : 'warning',
+            });
+        }
+        if (includeBaseStatus && game?.has_base !== undefined) {
+            descriptors.push({
+                key: 'base',
+                label: game.has_base ? 'Base Present' : 'Base Missing',
+                tone: game.has_base ? 'success' : 'warning',
+            });
+        }
+        if (game?.has_latest_version !== undefined && (appType !== 'DLC' || includeDlcUpdateStatus)) {
+            descriptors.push({
+                key: 'updates',
+                label: game.has_latest_version ? 'Up to Date' : 'Update Available',
+                tone: game.has_latest_version ? 'success' : 'warning',
+            });
+        }
+        if (includeDlcCoverage) {
+            descriptors.push({
+                key: 'dlc',
+                label: game.has_all_dlcs ? 'DLC Complete' : 'DLC Missing',
+                tone: game.has_all_dlcs ? 'success' : 'warning',
+            });
+        }
+
+        return descriptors;
+    }
+
+    function buildLibraryStatusBadge(status, game, options = {}) {
+        const badge = $('<span class="badge rounded-pill"></span>')
+            .addClass(`text-bg-${status.tone}`);
+
+        if (options.extraClasses) {
+            badge.addClass(options.extraClasses);
+        }
+
+        badge.text(status.label);
+
+        if (options.interactiveUpdates && status.key === 'updates' && game?.app_type !== 'DLC') {
+            badge.attr('title', `${String(game.name || '')} [${String(game.title_id || '')}] Updates`);
+            if (game.version !== undefined && game.version.length && Array.isArray(game.version)) {
+                const popoverContent = game.version.map(version =>
+                    `${version.release_date}: v${version.version} ${version.owned ? 'In Library' : 'Missing'}`
+                ).join('\n');
+                badge.popover({
+                    content: popoverContent,
+                    trigger: 'click',
+                    placement: 'top',
+                });
+                badge.css('cursor', 'pointer');
+            } else {
+                badge.attr('data-bs-toggle', 'tooltip');
+                badge.attr('data-bs-placement', 'top');
+
+                if (game.version !== undefined && !game.version.length && Array.isArray(game.version)) {
+                    badge.attr('data-bs-title', 'Version v0');
+                } else {
+                    const displayVersion = getDisplayVersion(game);
+                    if (displayVersion !== '-') {
+                        badge.attr('data-bs-title', 'Version ' + displayVersion);
+                    }
+                }
+            }
+        }
+
+        return badge;
+    }
+
+    function buildSecondaryMetaBadge(text) {
+        return $('<span class="badge rounded-pill text-bg-secondary"></span>').text(text);
+    }
+
     function renderDiscoverRow(containerId, items) {
         const el = document.getElementById(containerId);
         if (!el) return;
@@ -615,12 +900,14 @@
             btn.setAttribute('data-bs-app-id', game.app_id);
             btn.setAttribute('data-bs-app-type', game.app_type);
 
-            const iconSrc = game.title_id ? `/api/shop/icon/${game.title_id}` : '';
-            const title = escapeHtml(getGameTitle(game));
+            const cacheIconSrc = game.title_id ? `/api/shop/icon/${encodeURIComponent(game.title_id)}?size=web` : '';
+            const directIconSrc = ((game.icon_url || game.iconUrl || '') + '').trim();
+            const iconSrc = cacheIconSrc || directIconSrc || '/static/placeholder-icon.svg';
+            const title = escapeHtml(getLibraryDisplayTitle(game));
             const genre = escapeHtml(getPrimaryGenre(game));
             btn.innerHTML = `
                 <div class="discover-tile-body">
-                    <img class="discover-tile-img" src="${iconSrc || '/static/placeholder-icon.svg'}" alt="">
+                    <img class="discover-tile-img" src="${iconSrc}" alt="">
                     <div class="discover-tile-title">${title}</div>
                     <div class="discover-tile-subtitle">${genre}</div>
                 </div>
@@ -629,10 +916,12 @@
             const img = btn.querySelector('img');
             if (img) {
                 img.addEventListener('error', function () {
-                    if (!this.dataset.triedFallback) {
+                    if (!this.dataset.triedFallback && directIconSrc && this.src !== directIconSrc) {
                         this.dataset.triedFallback = '1';
-                        this.src = '/static/placeholder-icon.svg';
+                        this.src = directIconSrc;
+                        return;
                     }
+                    this.src = '/static/placeholder-icon.svg';
                 });
             }
 
@@ -644,13 +933,14 @@
         const wrapper = document.getElementById('discoverSection');
         if (!wrapper) return;
 
-        if (!shouldShowDiscovery() || !discoverySections) {
+        const newest = discoverySections?.newest || [];
+        const recommended = discoverySections?.recommended || [];
+        if (!newest.length && !recommended.length) {
             wrapper.classList.add('discover-collapsed');
             return;
         }
+
         wrapper.classList.remove('discover-collapsed');
-        const newest = discoverySections.newest || [];
-        const recommended = discoverySections.recommended || [];
 
         renderDiscoverRow('newlyAddedRow', newest);
         renderDiscoverRow('recommendedRow', recommended);
@@ -728,14 +1018,15 @@
 
             const cardOverlay = $('<div class="card-img-overlay game-info"></div>');
 
-            const title = $('<h5 class="card-title game-title"></h5>').text(game.title_id_name || game.name);
+            const fullTitle = getLibraryDisplayTitle(game);
+            const title = $('<h5 class="card-title game-title"></h5>')
+                .text(fullTitle)
+                .attr('data-bs-toggle', 'tooltip')
+                .attr('data-bs-placement', 'top')
+                .attr('data-bs-title', fullTitle);
             cardOverlay.append(title);
 
             const description = $('<p class="card-text game-description"></p>');
-            if (game.app_type === 'DLC') {
-                const small = $('<small></small>').text(`${game.name} | `);
-                description.append(small);
-            }
             const small = $('<small></small>').text(game.id);
             description.append(small);
             cardOverlay.append(description);
@@ -750,55 +1041,16 @@
 
             const tagsContainer = $('<div class="tags-container"></div>');
 
-            // Status icons (Base / Update / DLC) shown above action buttons.
-            const statusIcons = $('<div class="game-status-icons"></div>');
+            const statusBadges = $('<div class="game-status-icons"></div>');
+            getLibraryStatusDescriptors(game).forEach(status => {
+                statusBadges.append(buildLibraryStatusBadge(status, game, {
+                    extraClasses: 'game-tag',
+                    interactiveUpdates: true,
+                }));
+            });
 
-            const baseState = (game.has_base !== undefined)
-                ? (game.has_base ? 'success' : 'warning')
-                : ((game.app_type === 'BASE') ? ((game.owned === false) ? 'warning' : 'success') : null);
-            if (baseState) {
-                statusIcons.append(
-                    $(`<span class="badge rounded-pill game-tag text-bg-${baseState}" title="Base"></span>`)
-                        .html('<i class="bi bi-disc-fill"></i>')
-                );
-            }
-
-            if (game.has_latest_version !== undefined) {
-                const versionBadge = $(`<span class="badge rounded-pill game-tag version-tag" title="${game.name} [${game.title_id}] Updates"></span>`)
-                    .addClass(`text-bg-${game.has_latest_version ? 'success' : 'warning'}`)
-                    .html(`<i class="bi ${game.has_latest_version ? 'bi-check-circle-fill' : 'bi-arrow-down-circle'}"></i>`);
-                if (game.version !== undefined && game.version.length && Array.isArray(game.version)) {
-                    const popoverContent = game.version.map(version => 
-                        `${version.release_date}: v${version.version} ${version.owned ? 'Owned' : 'Missing'}`
-                    ).join('\n');
-                    versionBadge.popover({
-                        content: popoverContent,
-                        trigger: 'click',
-                        placement: 'top',
-                    });
-                    versionBadge.css('cursor', 'pointer');
-                } else {
-                    // version tooltip on hover
-                    versionBadge.attr("data-bs-toggle", "tooltip")
-                    versionBadge.attr("data-bs-placement", "top")
-
-                    if (game.version !== undefined && !game.version.length && Array.isArray(game.version)){
-                        versionBadge.attr("data-bs-title", "Version v0")
-                    } else if (game.version !== undefined && game.version.length) {
-                        versionBadge.attr("data-bs-title", "Version v" + game.version)
-                    }
-                }
-                statusIcons.append(versionBadge);
-            }
-
-            if (game.has_all_dlcs !== undefined) {
-                const dlcBadge = $('<span class="badge rounded-pill game-tag"></span>').addClass(`text-bg-${game.has_all_dlcs ? 'success' : 'warning'}`).html('<i class="bi bi-box-seam-fill"></i>');
-                dlcBadge.attr('title', 'DLC');
-                statusIcons.append(dlcBadge);
-            }
-
-            if (statusIcons.children().length) {
-                tagsContainer.append(statusIcons);
+            if (statusBadges.children().length) {
+                tagsContainer.append(statusBadges);
             }
 
             const actionButtons = $('<div class="game-action-buttons"></div>');
@@ -846,14 +1098,15 @@
                 .attr('data-bs-app-type', game.app_type);
             const cacheIconSrc = game.title_id ? `/api/shop/icon/${game.title_id}?size=web` : '';
             const iconFallback = '/static/placeholder-icon.svg';
-            const title = escapeHtml(getGameTitle(game));
+            const fullTitle = getLibraryDisplayTitle(game);
+            const title = escapeHtml(fullTitle);
             const parts = splitGenres(getGameGenre(game));
             const genre = escapeHtml(parts.length > 3 ? `${parts.slice(0, 3).join(', ')}...` : parts.join(', '));
 
             iconBtn.html(`
                 <div class="discover-tile-body">
                     <img class="library-icon-img" src="${cacheIconSrc || iconFallback}" alt="">
-                    <div class="discover-tile-title">${title}</div>
+                    <div class="discover-tile-title" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="${title}">${title}</div>
                     <div class="discover-tile-subtitle">${genre}</div>
                 </div>
             `);
@@ -900,20 +1153,6 @@
         });
     }
 
-    function fetchLibraryStatus() {
-        $.getJSON("/api/library/status", function (result) {
-            if (!result || result['success'] !== true) {
-                return;
-            }
-            const status = result['status'] || {};
-            if (status['in_progress']) {
-                $('#libraryRebuildLabel').removeClass('d-none');
-            } else {
-                $('#libraryRebuildLabel').addClass('d-none');
-            }
-        });
-    }
-
     function renderListView() {
         const gameGrid = $('#gameGrid');
         gameGrid.removeClass('row g-4 icon-grid').addClass('list-view');
@@ -939,39 +1178,24 @@
 
         const tbody = table.find('tbody');
         paginatedGames.forEach(game => {
-            const title = game.title_id_name || game.name || game.title_id || game.app_id;
-            const subtitle = `${game.title_id || ''}`.trim();
-            const versionText = (() => {
-                if (Array.isArray(game.version) && game.version.length) {
-                    const latest = game.version[game.version.length - 1];
-                    return `v${latest.version}`;
-                }
-                if (game.version !== undefined && !Array.isArray(game.version)) {
-                    return `v${game.version}`;
-                }
-                return '-';
-            })();
-            const statusBadges = [];
-            if (game.owned !== undefined) {
-                statusBadges.push(`<span class="badge text-bg-${game.owned ? 'success' : 'warning'}">Owned</span>`);
-            }
-            if (game.has_latest_version !== undefined) {
-                statusBadges.push(`<span class="badge text-bg-${game.has_latest_version ? 'success' : 'warning'}">Up to date</span>`);
-            }
-            if (game.has_all_dlcs !== undefined) {
-                statusBadges.push(`<span class="badge text-bg-${game.has_all_dlcs ? 'success' : 'warning'}">All DLC</span>`);
-            }
+            const title = getLibraryDisplayTitle(game);
+            const subtitle = getLibraryDisplaySubtitle(game);
+            const versionText = getDisplayVersion(game);
+            const statusWrap = $('<div class="d-flex flex-wrap gap-1"></div>');
+            getLibraryStatusDescriptors(game).forEach(status => {
+                statusWrap.append(buildLibraryStatusBadge(status, game));
+            });
 
             const row = $(`
                 <tr>
                     <td>
-                        <div class="fw-semibold">${title}</div>
+                        <div class="fw-semibold" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="${escapeHtml(title)}">${title}</div>
                         <div class="text-muted small">${subtitle}</div>
                     </td>
                     <td class="text-muted small">${escapeHtml(splitGenres(getGameGenre(game)).join(', ')) || '-'}</td>
                     <td>${game.app_type}</td>
                     <td>${versionText}</td>
-                    <td>${statusBadges.join(' ')}</td>
+                    <td></td>
                     <td>
                         <button type="button" class="btn btn-outline-light btn-sm"
                             data-bs-toggle="modal" data-bs-target="#detailsModal"
@@ -988,6 +1212,7 @@
                     </td>
                 </tr>
             `);
+            row.find('td').eq(4).append(statusWrap.children().length ? statusWrap : '-');
             tbody.append(row);
         });
 
@@ -999,13 +1224,129 @@
 
     function getColumnsForCardSize(size) {
         switch (size) {
-            case 1: return 1; // 2 columns
-            case 2: return 2; // 3 columns
-            case 3: return 3; // 4 columns
-            case 4: return 4; // 6 columns
-            case 5: return 6; // 8 columns
-            default: return 4; // default to 3 columns
+            case 1: return 6; // smallest cards
+            case 2: return 4;
+            case 3: return 3;
+            case 4: return 2;
+            case 5: return 1; // largest cards
+            default: return 3;
         }
+    }
+
+    function getDisplayVersion(game) {
+        if (Array.isArray(game?.version) && game.version.length) {
+            const latest = game.version[game.version.length - 1];
+            if (latest && latest.version !== undefined && latest.version !== null) {
+                return `v${latest.version}`;
+            }
+        }
+        if (game?.version !== undefined && game?.version !== null && !Array.isArray(game.version)) {
+            return `v${game.version}`;
+        }
+        if (game?.app_version !== undefined && game?.app_version !== null && String(game.app_version).length) {
+            return `v${game.app_version}`;
+        }
+        return '-';
+    }
+
+    function getProtocolLabel(protocol) {
+        const value = String(protocol || '').trim().toLowerCase();
+        if (value === 'usenet') return 'NZB';
+        if (value === 'torrent') return 'Torrent';
+        return value || '-';
+    }
+
+    function formatPublishedAtTooltip(publishedAt) {
+        const text = String(publishedAt || '').trim();
+        if (!text) {
+            return '';
+        }
+        const date = new Date(text);
+        if (Number.isNaN(date.getTime())) {
+            return '';
+        }
+        return `Published ${date.toLocaleString()}`;
+    }
+
+    function buildDownloadSearchRow(item, actionLabel, extraData = {}) {
+        const row = $('<tr></tr>');
+        row.append($('<td></td>').text(item?.title || '-'));
+        row.append($('<td></td>').text(item?.indexer || '-'));
+        if (downloadUiVisibility.show_protocol_column) {
+            row.append($('<td></td>').text(getProtocolLabel(item?.protocol)));
+        }
+        if (downloadUiVisibility.show_usenet_columns) {
+            const ageCell = $('<td></td>').text(item?.age_label || '-');
+            const ageTooltip = formatPublishedAtTooltip(item?.published_at);
+            if (ageTooltip) {
+                ageCell.attr('title', ageTooltip);
+            }
+            row.append(ageCell);
+        }
+        row.append($('<td></td>').text(formatBytes(item?.size)));
+        if (downloadUiVisibility.show_torrent_columns) {
+            row.append($('<td></td>').text(item?.seeders ?? '-'));
+            row.append($('<td></td>').text(item?.leechers ?? '-'));
+        }
+        const actionCell = $('<td></td>');
+        const button = $('<button type="button" class="btn btn-sm btn-warning queue-download-btn"></button>');
+        button.text(actionLabel);
+        button.attr('data-download-url', String(item?.download_url || ''));
+        button.attr('data-title', String(item?.title || ''));
+        button.attr('data-protocol', String(item?.protocol || ''));
+        Object.entries(extraData).forEach(([key, value]) => {
+            button.attr(`data-${key}`, String(value ?? ''));
+        });
+        actionCell.append(button);
+        row.append(actionCell);
+        return row;
+    }
+
+    function setDetailsDownloadStatus(message, tone = 'muted') {
+        $('#detailsDownloadStatus')
+            .text(message || '')
+            .removeClass('text-danger text-success text-muted')
+            .addClass(`text-${tone}`);
+    }
+
+    function showTorrentSearchModal(statusMessage = 'Searching Prowlarr...') {
+        $('#torrentSearchStatus').text(statusMessage);
+        $('#torrentSearchResults').empty();
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('torrentSearchModal')).show();
+    }
+
+    function renderDownloadSearchResults(result, actionLabel, buildExtraData) {
+        if (!result['success']) {
+            $('#torrentSearchStatus').text(result['message'] || 'Search failed.');
+            return;
+        }
+        const results = result['results'] || [];
+        if (!results.length) {
+            $('#torrentSearchStatus').text('No results found.');
+            return;
+        }
+        $('#torrentSearchStatus').text(`Found ${results.length} results.`);
+        results.forEach(item => {
+            const row = buildDownloadSearchRow(item, actionLabel, buildExtraData(item));
+            $('#torrentSearchResults').append(row);
+        });
+        setDetailsDownloadStatus('');
+    }
+
+    function runDetailsDownloadSearch({ button, statusMessage = 'Searching Prowlarr...', request, actionLabel, buildExtraData }) {
+        button.prop('disabled', true);
+        setDetailsDownloadStatus(statusMessage);
+        showTorrentSearchModal();
+        request()
+            .done(function (result) {
+                renderDownloadSearchResults(result, actionLabel, buildExtraData);
+            })
+            .fail(function () {
+                $('#torrentSearchStatus').text('Search failed.');
+            })
+            .always(function () {
+                button.prop('disabled', false);
+            });
     }
 
     function getCardSizeRangeForView(view) {
@@ -1053,7 +1394,10 @@
         const slider = $('#cardSizeRange');
         slider.attr('min', r.min);
         slider.attr('max', r.max);
-        slider.val(clampCardSizeForView(currentView, cardSize));
+        const clamped = clampCardSizeForView(currentView, cardSize);
+        slider.val(clamped);
+        $('#cardSizeDecrease').prop('disabled', clamped <= r.min || currentView === 'list');
+        $('#cardSizeIncrease').prop('disabled', clamped >= r.max || currentView === 'list');
     }
 
     function updatePaginationControls(nbDisplayedGames) {
@@ -1090,16 +1434,46 @@
         });
         paginationControls.append(prevButton);
 
-        // Page numbers
-        for (let i = 1; i <= totalPages; i++) {
-            const pageButton = $('<li class="page-item"></li>').addClass(`page-item ${i === currentPage ? 'active' : ''}`).html(`<a class="page-link" href="#">${i}</a>`);
+        // Page numbers (windowed for large catalogs to avoid huge DOM costs).
+        const pageWindow = 2;
+        const visiblePages = [];
+        const firstPage = 1;
+        const lastPage = totalPages;
+        const start = Math.max(2, currentPage - pageWindow);
+        const end = Math.min(lastPage - 1, currentPage + pageWindow);
+
+        visiblePages.push(firstPage);
+        if (start > 2) {
+            visiblePages.push('ellipsis_start');
+        }
+        for (let i = start; i <= end; i++) {
+            visiblePages.push(i);
+        }
+        if (end < lastPage - 1) {
+            visiblePages.push('ellipsis_end');
+        }
+        if (lastPage > 1) {
+            visiblePages.push(lastPage);
+        }
+
+        visiblePages.forEach((pageRef) => {
+            if (typeof pageRef !== 'number') {
+                paginationControls.append('<li class="page-item disabled"><span class="page-link">...</span></li>');
+                return;
+            }
+            const pageButton = $('<li class="page-item"></li>')
+                .addClass(`page-item ${pageRef === currentPage ? 'active' : ''}`)
+                .html(`<a class="page-link" href="#">${pageRef}</a>`);
             pageButton.click(function (e) {
                 e.preventDefault();
-                currentPage = i;
+                if (pageRef === currentPage) {
+                    return;
+                }
+                currentPage = pageRef;
                 refreshGames(false);
             });
             paginationControls.append(pageButton);
-        }
+        });
 
         // Next button
         const nextButton = $('<li class="page-item"></li>').addClass(`page-item ${currentPage >= totalPages ? 'disabled' : ''}`).html(`
@@ -1128,32 +1502,88 @@
         // Calculate the size of the icons based on the slider value.
         // Use distinct steps so adjacent settings are visually different.
         const iconSizes = {
-            1: 320,
-            2: 280,
+            1: 160,
+            2: 200,
             3: 240,
-            4: 200,
-            5: 160,
+            4: 280,
+            5: 320,
         };
         const iconSize = iconSizes[cardSize] || 240;
         $('#gameGrid').css('--icon-size', `${iconSize}px`);
     }
 
-    function saveFiltersToStorage() {
-        const filters = {
-            type: [],
-            update: [],
-            completion: [],
-            recognition: []
-        };
-        if ($('#filterCheckBase').is(':checked')) filters.type.push('BASE');
-        if ($('#filterCheckDlc').is(':checked')) filters.type.push('DLC');
-        if ($('#filterCheckUpToDate').is(':checked')) filters.update.push('Up to date');
-        if ($('#filterCheckMissingUpdate').is(':checked')) filters.update.push('Outdated');
-        if ($('#filterCheckComplete').is(':checked')) filters.completion.push('Complete');
-        if ($('#filterCheckMissingDlc').is(':checked')) filters.completion.push('Missing DLC');
-        if ($('#filterCheckUnrecognized').is(':checked')) filters.recognition.push('Unrecognized');
+    function applyCurrentCardSize() {
+        applyCardSizeLimits();
+        if (currentView === 'icon') {
+            adjustIconSizes(cardSize);
+        } else if (currentView === 'card') {
+            adjustCardSizes(cardSize);
+        }
+    }
 
+    function saveFiltersToStorage() {
+        const filters = {};
+        Object.keys(FILTER_GROUPS).forEach(groupKey => {
+            filters[groupKey] = activeFilters[groupKey] || '';
+        });
         localStorage.setItem('activeFilters', JSON.stringify(filters));
+    }
+
+    function normalizeStoredFilterValue(groupKey, rawValue) {
+        const valueMap = LEGACY_FILTER_VALUE_MAP[groupKey] || {};
+        if (Array.isArray(rawValue)) {
+            const mappedValues = rawValue
+                .map(item => valueMap[item])
+                .filter(Boolean);
+            return mappedValues.length === 1 ? mappedValues[0] : '';
+        }
+        if (typeof rawValue === 'string') {
+            return valueMap[rawValue] || '';
+        }
+        return '';
+    }
+
+    function setFilterGroupValue(groupKey, value) {
+        const group = FILTER_GROUPS[groupKey];
+        const normalizedValue = value && group.options[value] ? value : '';
+        $(group.allSelector).prop('checked', normalizedValue === '');
+        Object.entries(group.options).forEach(([optionValue, selector]) => {
+            $(selector).prop('checked', optionValue === normalizedValue);
+        });
+        activeFilters[groupKey] = normalizedValue;
+    }
+
+    function getSelectedFilterGroupValue(groupKey) {
+        const group = FILTER_GROUPS[groupKey];
+        for (const [value, selector] of Object.entries(group.options)) {
+            if ($(selector).is(':checked')) {
+                return value;
+            }
+        }
+        return '';
+    }
+
+    function getFilterLabel(groupKey, value) {
+        if (!value) {
+            return '';
+        }
+        const group = FILTER_GROUPS[groupKey];
+        return group?.labels?.[value] || '';
+    }
+
+    function updateFilterButtonLabel(activeCount) {
+        const count = Number(activeCount || 0);
+        const button = $('#filterDropdownBtn');
+        const label = $('#filterDropdownBtnLabel');
+        const badge = $('#filterDropdownBtnCount');
+        if (!button.length || !label.length || !badge.length) {
+            return;
+        }
+
+        label.text('Filters');
+        button.attr('aria-label', count > 0 ? `Filters (${count} active)` : 'Filters');
+        badge.text(String(count));
+        badge.toggleClass('d-none', count === 0);
     }
 
     function saveGenreToStorage() {
@@ -1170,6 +1600,62 @@
         const btn = document.getElementById('genreDropdownBtn');
         if (!btn) return;
         btn.textContent = selectedGenre ? `Genre: ${selectedGenre}` : 'Genre';
+    }
+
+    function renderActiveFilters() {
+        const bar = $('#activeFiltersBar');
+        if (!bar.length) {
+            return;
+        }
+
+        const chips = [];
+        const searchText = ($('#textFilter').val() || '').trim();
+        if (searchText) {
+            chips.push(`Search: "${escapeHtml(searchText)}"`);
+        }
+        if (selectedGenre) {
+            chips.push(`Genre: ${escapeHtml(selectedGenre)}`);
+        }
+
+        Object.entries(FILTER_GROUPS).forEach(([groupKey, group]) => {
+            const label = getFilterLabel(groupKey, activeFilters[groupKey]);
+            if (label) {
+                chips.push(`${group.chipPrefix}: ${escapeHtml(label)}`);
+            }
+        });
+
+        updateFilterButtonLabel(chips.length);
+
+        if (!chips.length) {
+            bar.addClass('d-none').empty();
+            return;
+        }
+
+        bar.removeClass('d-none').empty();
+        const wrap = $('<div class="d-inline-flex flex-wrap align-items-center gap-2 px-3 py-2 rounded-3 border"></div>');
+        wrap.attr('style', 'background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12) !important;');
+        chips.forEach(text => {
+            wrap.append(`<span class="badge rounded-pill text-bg-secondary">${text}</span>`);
+        });
+        wrap.append('<button type="button" class="btn btn-link btn-sm text-decoration-none px-1 py-0" id="clearActiveFiltersBtn">Clear</button>');
+        bar.append(wrap);
+    }
+
+    function clearAllFilters() {
+        $('#textFilter').val('');
+        selectedGenre = '';
+        updateGenreButtonLabel();
+        localStorage.removeItem('selectedGenre');
+
+        Object.keys(FILTER_GROUPS).forEach(groupKey => {
+            setFilterGroupValue(groupKey, '');
+        });
+
+        localStorage.removeItem('activeFilters');
+        localStorage.removeItem('searchTerm');
+
+        renderActiveFilters();
+        recomputeFilteredGames();
     }
 
     function populateGenreDropdown() {
@@ -1197,30 +1683,34 @@
         });
     }
 
-    function recomputeFilteredGames() {
-        refreshGames(true);
+    function recomputeFilteredGames(scrollToGrid = false) {
+        refreshGames(true, scrollToGrid);
     }
 
     function loadFiltersFromStorage() {
         const savedFilters = localStorage.getItem('activeFilters');
         if (savedFilters) {
-            const filters = JSON.parse(savedFilters);
-
-            $('#filterCheckBase').prop('checked', filters.type?.includes('BASE') || false);
-            $('#filterCheckDlc').prop('checked', filters.type?.includes('DLC') || false);
-            $('#filterCheckUpToDate').prop('checked', filters.update?.includes('Up to date') || false);
-            $('#filterCheckMissingUpdate').prop('checked', filters.update?.includes('Outdated') || false);
-            $('#filterCheckComplete').prop('checked', filters.completion?.includes('Complete') || false);
-            $('#filterCheckMissingDlc').prop('checked', filters.completion?.includes('Missing DLC') || false);
-            $('#filterCheckUnrecognized').prop('checked', filters.recognition?.includes('Unrecognized') || false);
-
-            updateFilter();
+            try {
+                const filters = JSON.parse(savedFilters);
+                Object.keys(FILTER_GROUPS).forEach(groupKey => {
+                    const rawValue = Object.prototype.hasOwnProperty.call(filters, groupKey)
+                        ? filters[groupKey]
+                        : filters[groupKey === 'updates' ? 'update' : groupKey];
+                    setFilterGroupValue(groupKey, normalizeStoredFilterValue(groupKey, rawValue));
+                });
+            } catch (e) {
+                Object.keys(FILTER_GROUPS).forEach(groupKey => {
+                    setFilterGroupValue(groupKey, '');
+                });
+            }
         }
+        updateFilter();
 
         const savedSearch = localStorage.getItem('searchTerm');
         if (savedSearch) {
             $('#textFilter').val(savedSearch);
         }
+        renderActiveFilters();
     }
 
     $(document).ready(function () {
@@ -1261,7 +1751,6 @@
         refreshGames(true)
             .then(() => {
                 fetchLibrarySize();
-                fetchLibraryStatus();
             });
 
         // Sort dropdown
@@ -1275,7 +1764,8 @@
             selectedGenre = String($(this).attr('data-genre') || '');
             saveGenreToStorage();
             updateGenreButtonLabel();
-            recomputeFilteredGames();
+            renderActiveFilters();
+            recomputeFilteredGames(true);
         });
 
         // Event listeners for items per page dropdown
@@ -1298,12 +1788,21 @@
         $('#cardSizeRange').on('input', function () {
             cardSize = clampCardSizeForView(currentView, $(this).val());
             saveCardSizeForView(currentView, cardSize);
-            applyCardSizeLimits();
-            if (currentView === 'icon') {
-                adjustIconSizes(cardSize);
-            } else {
-                adjustCardSizes(cardSize);
-            }
+            applyCurrentCardSize();
+        });
+
+        $('#cardSizeDecrease').on('click', function () {
+            const r = getCardSizeRangeForView(currentView);
+            cardSize = Math.max(r.min, clampCardSizeForView(currentView, cardSize) - 1);
+            saveCardSizeForView(currentView, cardSize);
+            applyCurrentCardSize();
+        });
+
+        $('#cardSizeIncrease').on('click', function () {
+            const r = getCardSizeRangeForView(currentView);
+            cardSize = Math.min(r.max, clampCardSizeForView(currentView, cardSize) + 1);
+            saveCardSizeForView(currentView, cardSize);
+            applyCurrentCardSize();
         });
 
         // Event listener for view buttons
@@ -1325,18 +1824,29 @@
             renderGames();
         });
         
-        // Handle filter checkbox
-        $('.filterLabel').click(function() {
+        // Handle filter menu changes
+        $('#filterDropdownMenu').on('change', '.library-filter-option', function () {
             updateFilter();
+            renderActiveFilters();
             applyFilters();
             saveFiltersToStorage();
+        });
+
+        $('#activeFiltersBar').on('click', '#clearActiveFiltersBtn', function () {
+            clearAllFilters();
         });
 
         // Listen to input changes in the text filter input
         $("#textFilter").on("input", function () {
             const attributeText = $(this).val();
             localStorage.setItem('searchTerm', attributeText);
-            recomputeFilteredGames();
+            if (searchDebounceTimer) {
+                clearTimeout(searchDebounceTimer);
+            }
+            searchDebounceTimer = setTimeout(function () {
+                renderActiveFilters();
+                recomputeFilteredGames();
+            }, SEARCH_DEBOUNCE_MS);
         });
 
         if (canManageDownloads) {
@@ -1361,31 +1871,18 @@
                     }
                     $('#torrentSearchStatus').text(`Found ${results.length} results.`);
                     results.forEach(item => {
-                        const row = $(`
-                            <tr>
-                                <td>${item.title || '-'}</td>
-                                <td>${formatBytes(item.size)}</td>
-                                <td>${item.seeders ?? '-'}</td>
-                                <td>${item.leechers ?? '-'}</td>
-                                <td>
-                                    <button class="btn btn-sm btn-warning queue-torrent-btn"
-                                        data-download-url="${item.download_url}"
-                                        data-title="${item.title || ''}">
-                                        Queue
-                                    </button>
-                                </td>
-                            </tr>
-                        `);
+                        const row = buildDownloadSearchRow(item, 'Queue');
                         $('#torrentSearchResults').append(row);
                     });
                 });
             });
 
-        $(document).on('click', '.queue-torrent-btn', function () {
+        $(document).on('click', '.queue-download-btn', function () {
             const button = $(this);
             const downloadUrl = button.data('download-url');
             const title = button.data('title');
             const titleId = button.data('title-id');
+            const protocol = button.data('protocol');
             const updateOnly = button.data('update-only') === true || button.data('update-only') === 'true';
             const expectedVersion = button.data('expected-version');
             if (!downloadUrl) {
@@ -1400,6 +1897,7 @@
                     download_url: downloadUrl,
                     title: title,
                     title_id: titleId,
+                    protocol: protocol,
                     update_only: updateOnly,
                     expected_version: expectedVersion
                 }),
@@ -1427,8 +1925,6 @@
         });
     
     });
-
-    setInterval(fetchLibraryStatus, 4000);
 
     function findGameByKey(appId, appType) {
         if (!games || !appId || !appType) {
@@ -1469,6 +1965,111 @@
             });
         });
     }
+    function buildDetailsSkeletonRows(rowCount = 4) {
+        return Array.from({ length: rowCount }, () => `
+            <tr>
+                <td><span class="details-skeleton-line details-skeleton-cell details-skeleton-cell-version"></span></td>
+                <td><span class="details-skeleton-line details-skeleton-cell details-skeleton-cell-status"></span></td>
+                <td><span class="details-skeleton-line details-skeleton-cell details-skeleton-cell-size"></span></td>
+                <td><span class="details-skeleton-line details-skeleton-cell details-skeleton-cell-date"></span></td>
+                <td class="text-end"></td>
+            </tr>
+        `).join('');
+    }
+
+    function setDetailsStatus(message, tone = 'muted') {
+        const status = $('#detailsDownloadStatus');
+        status.text(message || '');
+        status.removeClass('text-muted text-danger text-success').addClass(`text-${tone || 'muted'}`);
+    }
+
+    const detailsDeleteConfirmModalEl = document.getElementById('detailsDeleteConfirmModal');
+    const detailsDeleteConfirmModal = detailsDeleteConfirmModalEl ? new bootstrap.Modal(detailsDeleteConfirmModalEl) : null;
+    let detailsDeleteAction = null;
+
+    function showDetailsDeleteConfirm(title, message, onConfirm) {
+        if (!detailsDeleteConfirmModal) {
+            return;
+        }
+        detailsDeleteAction = onConfirm;
+        $('#detailsDeleteConfirmModalLabel').text(title);
+        $('#detailsDeleteConfirmModalBody').text(message);
+        $('#detailsDeleteConfirmBtn').prop('disabled', false);
+        detailsDeleteConfirmModal.show();
+    }
+
+    if (detailsDeleteConfirmModalEl) {
+        detailsDeleteConfirmModalEl.addEventListener('hidden.bs.modal', function () {
+            detailsDeleteAction = null;
+            $('#detailsDeleteConfirmBtn').prop('disabled', false);
+        });
+    }
+
+    $('#detailsDeleteConfirmBtn').on('click', function () {
+        if (!detailsDeleteAction) {
+            return;
+        }
+        $(this).prop('disabled', true);
+        detailsDeleteAction();
+    });
+
+    const detailsModalEl = document.getElementById('detailsModal');
+    const detailsModalInstance = detailsModalEl ? bootstrap.Modal.getOrCreateInstance(detailsModalEl) : null;
+
+    function handleSuccessfulDeleteCompletion(message, alertType = 'success') {
+        if (detailsModalInstance) {
+            detailsModalInstance.hide();
+        }
+        gameDetailsCache.clear();
+        return refreshGames(false)
+            .then(() => {
+                if (message) {
+                    showLibraryAlert(message, alertType);
+                }
+            })
+            .catch(() => {
+                if (message) {
+                    showLibraryAlert(message, alertType);
+                }
+            });
+    }
+
+    function executeDetailsDelete(payload, successMessage) {
+        setDetailsStatus('Deleting...', 'muted');
+        $.ajax({
+            url: "/api/manage/delete-library-content",
+            type: 'POST',
+            data: JSON.stringify(payload),
+            contentType: "application/json",
+            success: function (result) {
+                if (result && result['success']) {
+                    handleSuccessfulDeleteCompletion(successMessage, 'success');
+                    return;
+                }
+                const errors = (result && result['errors']) ? result['errors'].join('; ') : 'Delete failed.';
+                setDetailsStatus(errors, 'danger');
+            },
+            error: function (xhr) {
+                const response = xhr && xhr.responseJSON ? xhr.responseJSON : null;
+                if (response && response['mutated']) {
+                    const warnings = (response['errors'] || []).join('; ');
+                    const warningMessage = warnings
+                        ? `${successMessage} Some files failed: ${warnings}`
+                        : successMessage;
+                    handleSuccessfulDeleteCompletion(warningMessage, 'warning');
+                    return;
+                }
+                const errors = (response && response['errors']) ? response['errors'].join('; ') : 'Delete failed.';
+                setDetailsStatus(errors, 'danger');
+            },
+            complete: function () {
+                $('#detailsDeleteConfirmBtn').prop('disabled', false);
+                if (detailsDeleteConfirmModal) {
+                    detailsDeleteConfirmModal.hide();
+                }
+            }
+        });
+    }
 
     function renderDetails(game) {
         if (!game) {
@@ -1476,105 +2077,325 @@
             $('#detailsSubtitle').text('');
             $('#detailsMeta').empty();
             $('#detailsVersions').empty();
-            $('#detailsDownloadStatus').text('');
+            setDetailsStatus('', 'muted');
             return;
         }
-
-        const title = game.title_id_name || game.name || game.title_id || game.app_id;
+        const baseTitle = game.title_id_name || game.title_id || game.app_id;
+        const dlcName = game.name || game.app_id;
+        const title = (String(game.app_type || '').toUpperCase() === 'DLC' && dlcName && dlcName !== baseTitle)
+            ? `${baseTitle} - ${dlcName}`
+            : (baseTitle || dlcName);
         $('#detailsTitle').text(title);
         $('#detailsSubtitle').text(`${game.app_type} | App ID ${game.app_id} | Title ID ${game.title_id}`);
 
+        const dlcList = Array.isArray(game.dlc_list) ? game.dlc_list : [];
         const metaItems = [];
+        const statusItems = getLibraryStatusDescriptors(game, {
+            includeBaseStatus: String(game.app_type || '').toUpperCase() === 'DLC',
+            includeDlcUpdateStatus: true,
+        });
         const genres = splitGenres(getGameGenre(game));
         if (genres.length) {
-            metaItems.push(`<span class="badge text-bg-secondary">Genres: ${escapeHtml(genres.join(', '))}</span>`);
-        }
-        if (game.owned !== undefined) {
-            metaItems.push(`<span class="badge text-bg-${game.owned ? 'success' : 'warning'}">Owned: ${game.owned ? 'Yes' : 'No'}</span>`);
-        }
-        if (game.has_base !== undefined) {
-            metaItems.push(`<span class="badge text-bg-${game.has_base ? 'success' : 'warning'}">Base: ${game.has_base ? 'Yes' : 'No'}</span>`);
-        }
-        if (game.has_latest_version !== undefined) {
-            metaItems.push(`<span class="badge text-bg-${game.has_latest_version ? 'success' : 'warning'}">Up to date: ${game.has_latest_version ? 'Yes' : 'No'}</span>`);
-        }
-        if (game.has_all_dlcs !== undefined) {
-            metaItems.push(`<span class="badge text-bg-${game.has_all_dlcs ? 'success' : 'warning'}">All DLC: ${game.has_all_dlcs ? 'Yes' : 'No'}</span>`);
+            metaItems.push(buildSecondaryMetaBadge(`Genres: ${genres.join(', ')}`));
         }
         if (game.size !== undefined) {
-            metaItems.push(`<span class="badge text-bg-secondary">Size: ${formatBytes(game.size)}</span>`);
+            metaItems.push(buildSecondaryMetaBadge(`Size: ${formatBytes(game.size)}`));
         }
-        $('#detailsMeta').html(metaItems.join(' '));
+        const metaContainer = $('<div></div>');
+        if (statusItems.length) {
+            const statusWrap = $('<div class="d-flex flex-wrap align-items-center gap-2 mb-2"></div>');
+            statusItems.forEach(status => {
+                statusWrap.append(buildLibraryStatusBadge(status, game));
+            });
+            metaContainer.append(statusWrap);
+        }
+        if (metaItems.length) {
+            const metaWrap = $('<div class="d-flex flex-wrap align-items-center gap-2"></div>');
+            metaItems.forEach(item => metaWrap.append(item));
+            metaContainer.append(metaWrap);
+        }
+        $('#detailsMeta').empty().append(metaContainer);
 
         const versions = Array.isArray(game.version) ? game.version : [];
-        if (!versions.length) {
-            $('#detailsVersions').html('<div class="text-muted">No version data available.</div>');
-            $('#detailsDownloadStatus').text('');
-            return;
-        }
-
-        const rows = versions.map(version => `
-            <tr>
-                <td>v${version.version}</td>
-                <td>${version.owned ? 'Owned' : 'Missing'}</td>
-                <td>${(version.size !== undefined && version.size !== null) ? formatBytes(version.size) : '-'}</td>
-                <td>${version.release_date || 'Unknown'}</td>
-            </tr>
-        `).join('');
-
-        const missingVersions = versions.filter(version => !version.owned);
-        const latestMissing = missingVersions.length ? missingVersions[missingVersions.length - 1] : null;
-        const actionRow = (canManageDownloads && latestMissing)
+        const parseReleaseDateValue = (value) => {
+            const normalized = String(value || '').trim();
+            if (!normalized || normalized === 'Unknown') {
+                return Number.NEGATIVE_INFINITY;
+            }
+            const timestamp = Date.parse(normalized);
+            return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
+        };
+        const sortedVersions = [...versions].sort((left, right) => {
+            const releaseDiff = parseReleaseDateValue(right?.release_date) - parseReleaseDateValue(left?.release_date);
+            if (releaseDiff !== 0) {
+                return releaseDiff;
+            }
+            return Number(right?.version || 0) - Number(left?.version || 0);
+        });
+        const canDeleteRows = canManageDownloads && sortedVersions.some(version => version && version.deletable);
+        const versionRows = sortedVersions.map(version => {
+            const actionCell = canDeleteRows
+                ? `
+                    <td class="text-end">
+                        ${version.deletable
+                            ? `<button type="button" class="btn btn-outline-danger btn-sm details-delete-version-btn"
+                                    data-app-id="${escapeHtml(String(version.app_id || game.app_id || ''))}"
+                                    data-app-type="${escapeHtml(String(version.app_type || game.app_type || ''))}"
+                                    data-version="${escapeHtml(String(version.version ?? ''))}"
+                                    data-item-name="${escapeHtml(String(game.app_type === 'DLC' ? (game.name || title) : title))}">
+                                    <i class="bi bi-trash"></i>
+                               </button>`
+                            : ''}
+                    </td>
+                `
+                : '';
+            return `
+                <tr>
+                    <td>v${version.version}</td>
+                    <td>${version.owned ? 'Owned' : 'Missing'}</td>
+                    <td>${(version.size !== undefined && version.size !== null) ? formatBytes(version.size) : '-'}</td>
+                    <td>${version.release_date || 'Unknown'}</td>
+                    ${actionCell}
+                </tr>
+            `;
+        }).join('');
+        const missingVersions = sortedVersions.filter(version => !version.owned);
+        const latestMissing = missingVersions.length ? missingVersions[0] : null;
+        const latestKnownVersion = sortedVersions.length ? sortedVersions[0] : null;
+        const updateSearchVersion = latestMissing?.version ?? latestKnownVersion?.version ?? null;
+        const titleQuery = game.title_id_name || game.name || game.title_id || '';
+        const updateButton = (canManageDownloads && game.title_id && updateSearchVersion !== null && updateSearchVersion !== undefined)
             ? `
-                <div class="mt-3">
                     <button type="button" class="btn btn-warning btn-sm manual-download-btn"
-                        data-title-id="${game.title_id}" data-version="${latestMissing.version}">
-                        <i class="bi bi-cloud-arrow-down"></i> Search & download v${latestMissing.version}
+                        data-title-id="${game.title_id}" data-version="${updateSearchVersion}">
+                        <i class="bi bi-cloud-arrow-down"></i> Search updates
                     </button>
+            `
+            : '';
+        const baseButton = (canManageDownloads && titleQuery)
+            ? `
+                    <button type="button" class="btn btn-warning btn-sm manual-base-download-btn"
+                        data-title-id="${game.title_id}" data-title-query="${titleQuery}">
+                        <i class="bi bi-box-seam"></i> Search base game
+                    </button>
+            `
+            : '';
+        const cascadeDeleteButton = (canManageDownloads && game.app_type === 'BASE' && game.has_owned_content)
+            ? `
+                    <button type="button" class="btn btn-danger btn-sm details-delete-cascade-btn"
+                        data-title-id="${escapeHtml(String(game.title_id || ''))}"
+                        data-title-name="${escapeHtml(String(title || 'this title'))}">
+                        <i class="bi bi-trash"></i> Delete game, updates, and DLC
+                    </button>
+            `
+            : '';
+        const dlcSearchQuery = titleQuery ? `${titleQuery} DLC` : '';
+        const dlcSearchButton = (canManageDownloads && dlcSearchQuery)
+            ? `
+                    <button type="button" class="btn btn-warning btn-sm details-dlc-search-btn"
+                        data-title-id="${escapeHtml(String(game.title_id || ''))}"
+                        data-query="${escapeHtml(dlcSearchQuery)}"
+                        data-label="${escapeHtml(titleQuery || 'DLC')}">
+                        <i class="bi bi-cloud-arrow-down"></i> Search DLC
+                    </button>
+            `
+            : '';
+        const customSearchRow = canManageDownloads
+            ? `
                     <div class="input-group input-group-sm mt-2 manual-search-group">
                         <input type="text" class="form-control manual-search-input" placeholder="Custom search terms">
                         <button type="button" class="btn btn-outline-secondary manual-search-btn"
-                            data-title-id="${game.title_id}" data-version="${latestMissing.version}">
+                            data-title-id="${game.title_id || ''}" data-version="${updateSearchVersion ?? ''}">
                             Search files
                         </button>
+                    </div>
+            `
+            : '';
+        const actionRow = (updateButton || baseButton || cascadeDeleteButton || dlcSearchButton)
+            ? `
+                <div class="mt-3">
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <div class="d-flex flex-wrap gap-2">
+                            ${baseButton}
+                            ${updateButton}
+                            ${dlcSearchButton}
+                        </div>
+                        ${cascadeDeleteButton
+                            ? `
+                                <div class="ms-auto d-flex flex-wrap gap-2">
+                                    ${cascadeDeleteButton}
+                                </div>
+                            `
+                            : ''}
                     </div>
                 </div>
             `
             : '';
+        const canSearchDlcRows = canManageDownloads && dlcList.some(dlc => {
+            const rawName = String((dlc && dlc.name) || game.title_id_name || game.title_id || '').trim();
+            return !(dlc && dlc.owned) && Boolean(rawName);
+        });
+        const dlcRows = dlcList.map(dlc => {
+            const name = escapeHtml(dlc.name || dlc.app_id || '-');
+            const status = dlc.owned ? 'Owned' : 'Missing';
+            const statusClass = dlc.owned ? 'text-bg-success' : 'text-bg-warning';
+            const latest = dlc.latest_version ? `v${dlc.latest_version}` : '-';
+            const owned = dlc.owned_version ? `v${dlc.owned_version}` : '-';
+            const rawName = String(dlc.name || game.title_id_name || game.title_id || '').trim();
+            const dlcSearchQuery = rawName ? `${rawName} DLC` : '';
+            const actionCell = canSearchDlcRows
+                ? `
+                    <td class="text-end">
+                        ${!dlc.owned && dlcSearchQuery
+                            ? `<button type="button" class="btn btn-outline-warning btn-sm details-dlc-search-btn"
+                                    data-title-id="${escapeHtml(String(game.title_id || ''))}"
+                                    data-query="${escapeHtml(dlcSearchQuery)}"
+                                    data-label="${escapeHtml(rawName || 'DLC')}">
+                                    <i class="bi bi-cloud-arrow-down"></i>
+                               </button>`
+                            : ''}
+                    </td>
+                `
+                : '';
+            return `
+                <tr>
+                    <td>${name}</td>
+                    <td><span class="badge ${statusClass}">${status}</span></td>
+                    <td>${owned}</td>
+                    <td>${latest}</td>
+                    ${actionCell}
+                </tr>
+            `;
+        }).join('');
 
-        $('#detailsVersions').html(`
-            <table class="table table-sm table-striped">
-                 <thead>
-                     <tr>
-                         <th scope="col">Version</th>
-                         <th scope="col">Status</th>
-                         <th scope="col">Size</th>
-                         <th scope="col">Release date</th>
-                     </tr>
-                 </thead>
-                <tbody>
-                    ${rows}
-                </tbody>
-            </table>
-            ${actionRow}
-        `);
-        $('#detailsDownloadStatus').text('');
+        const updatesTabHtml = versions.length
+            ? `
+                <div class="details-pane-stack">
+                    <div class="details-list-scroll">
+                        <table class="table table-sm table-striped mb-0">
+                             <thead>
+                                 <tr>
+                                     <th scope="col">Version</th>
+                                     <th scope="col">Status</th>
+                                     <th scope="col">Size</th>
+                                     <th scope="col">Release date</th>
+                                     ${canDeleteRows ? '<th scope="col" class="text-end">Actions</th>' : ''}
+                                 </tr>
+                             </thead>
+                            <tbody>
+                                ${versionRows}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `
+            : '<div class="text-muted py-2">No update version data available.</div>';
+
+        const dlcTabHtml = dlcList.length
+            ? `
+                <div class="details-pane-stack">
+                    <div class="details-list-scroll">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col">DLC</th>
+                                    <th scope="col">Status</th>
+                                    <th scope="col">Owned</th>
+                                    <th scope="col">Latest</th>
+                                    ${canSearchDlcRows ? '<th scope="col" class="text-end">Actions</th>' : ''}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${dlcRows}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `
+            : '<div class="text-muted py-2">No DLC entries available.</div>';
+
+        const defaultToDlcTab = String(game.app_type || '').toUpperCase() === 'DLC';
+
+        if (dlcList.length > 0) {
+            $('#detailsVersions').html(`
+                ${actionRow}
+                ${customSearchRow}
+                <ul class="nav nav-tabs mb-2 ${actionRow ? 'mt-3' : ''}" id="detailsListTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link ${defaultToDlcTab ? '' : 'active'}" id="details-updates-tab" data-bs-toggle="tab"
+                            data-bs-target="#details-updates-pane" type="button" role="tab"
+                            aria-controls="details-updates-pane" aria-selected="${defaultToDlcTab ? 'false' : 'true'}">
+                            Updates <span class="badge rounded-pill text-bg-secondary ms-1">${versions.length}</span>
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link ${defaultToDlcTab ? 'active' : ''}" id="details-dlc-tab" data-bs-toggle="tab"
+                            data-bs-target="#details-dlc-pane" type="button" role="tab"
+                            aria-controls="details-dlc-pane" aria-selected="${defaultToDlcTab ? 'true' : 'false'}">
+                            DLC <span class="badge rounded-pill text-bg-secondary ms-1">${dlcList.length}</span>
+                        </button>
+                    </li>
+                </ul>
+                <div class="tab-content" id="detailsTabContent">
+                    <div class="tab-pane fade ${defaultToDlcTab ? '' : 'show active'} details-tab-pane" id="details-updates-pane" role="tabpanel" aria-labelledby="details-updates-tab">
+                        ${updatesTabHtml}
+                    </div>
+                    <div class="tab-pane fade ${defaultToDlcTab ? 'show active' : ''} details-tab-pane" id="details-dlc-pane" role="tabpanel" aria-labelledby="details-dlc-tab">
+                        ${dlcTabHtml}
+                    </div>
+                </div>
+            `);
+        } else {
+            $('#detailsVersions').html(`
+                ${actionRow}
+                ${customSearchRow}
+                <div class="tab-content" id="detailsTabContent">
+                    <div class="tab-pane show active details-tab-pane" id="details-updates-pane" role="tabpanel">
+                        ${updatesTabHtml}
+                    </div>
+                </div>
+            `);
+        }
+        setDetailsStatus('', 'muted');
     }
 
     function showDetailsLoading() {
-        $('#detailsTitle').text('Loading...');
-        $('#detailsSubtitle').text('');
-        $('#detailsMeta').empty();
-        $('#detailsVersions').html('<div class="text-muted">Loading details...</div>');
-        $('#detailsDownloadStatus').text('');
+        $('#detailsTitle').html('<span class="details-skeleton-line details-skeleton-line-title" aria-hidden="true"></span>');
+        $('#detailsSubtitle').html('<span class="details-skeleton-line details-skeleton-line-subtitle" aria-hidden="true"></span>');
+        $('#detailsMeta').html(`
+            <div class="details-skeleton-badges" aria-hidden="true">
+                <span class="details-skeleton-badge"></span>
+                <span class="details-skeleton-badge"></span>
+                <span class="details-skeleton-badge"></span>
+                <span class="details-skeleton-badge"></span>
+            </div>
+        `);
+        $('#detailsVersions').html(`
+            <table class="table table-sm table-striped details-skeleton-table mb-0" aria-hidden="true">
+                <thead>
+                    <tr>
+                        <th scope="col">Version</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Size</th>
+                        <th scope="col">Release date</th>
+                        <th scope="col" class="text-end"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${buildDetailsSkeletonRows(4)}
+                </tbody>
+            </table>
+            <div class="visually-hidden" role="status">Loading content details...</div>
+        `);
+        setDetailsStatus('', 'muted');
     }
 
-    const detailsModal = document.getElementById('detailsModal');
-    if (detailsModal) {
-        detailsModal.addEventListener('show.bs.modal', event => {
+    if (detailsModalEl) {
+        detailsModalEl.addEventListener('show.bs.modal', event => {
             const button = event.relatedTarget;
             const appId = button.getAttribute('data-bs-app-id');
             const appType = button.getAttribute('data-bs-app-type');
+            currentDetailsContext = { appId: appId, appType: appType };
             const initial = findGameByKey(appId, appType);
             if (initial) {
                 renderDetails(initial);
@@ -1585,7 +2406,50 @@
                 .then(game => renderDetails(game))
                 .catch(() => renderDetails(null));
         });
+        detailsModalEl.addEventListener('hidden.bs.modal', () => {
+            currentDetailsContext = null;
+            setDetailsStatus('', 'muted');
+        });
     }
+
+    $(document).on('click', '.details-delete-cascade-btn', function () {
+        const titleId = String($(this).data('title-id') || '').trim();
+        const titleName = String($(this).data('title-name') || 'this title').trim();
+        if (!titleId) {
+            return;
+        }
+        showDetailsDeleteConfirm(
+            'Delete game, updates, and DLC',
+            `Delete the base game and all owned updates and DLC for ${titleName}?`,
+            function () {
+                executeDetailsDelete(
+                    { scope: 'title_cascade', title_id: titleId },
+                    'Deleted base game content.'
+                );
+            }
+        );
+    });
+
+    $(document).on('click', '.details-delete-version-btn', function () {
+        const appId = String($(this).data('app-id') || '').trim();
+        const appType = String($(this).data('app-type') || '').trim();
+        const version = $(this).data('version');
+        const itemName = String($(this).data('item-name') || 'this entry').trim();
+        if (!appId || !appType || version === undefined) {
+            return;
+        }
+        const label = (String(appType).toUpperCase() === 'DLC') ? 'DLC' : 'update';
+        showDetailsDeleteConfirm(
+            `Delete ${label}`,
+            `Delete ${label} v${version} for ${itemName}?`,
+            function () {
+                executeDetailsDelete(
+                    { scope: 'app_version', app_id: appId, app_type: appType, version: version },
+                    `Deleted ${label} v${version}.`
+                );
+            }
+        );
+    });
 
     function findGameByTitleId(titleId) {
         const tid = (titleId || '').trim().toUpperCase();
@@ -1777,54 +2641,46 @@
         if (!titleId || version === undefined) {
             return;
         }
-        button.prop('disabled', true);
-        $('#detailsDownloadStatus').text('Searching Prowlarr...').removeClass('text-danger text-success').addClass('text-muted');
-        $('#torrentSearchStatus').text('Searching Prowlarr...');
-        $('#torrentSearchResults').empty();
-        const modal = new bootstrap.Modal(document.getElementById('torrentSearchModal'));
-        modal.show();
-        $.ajax({
-            url: "/api/downloads/manual-search",
-            type: 'POST',
-            data: JSON.stringify({ title_id: titleId, version: version }),
-            contentType: "application/json",
-            success: function (result) {
-                if (!result['success']) {
-                    $('#torrentSearchStatus').text(result['message'] || 'Search failed.');
-                    return;
-                }
-                const results = result['results'] || [];
-                if (!results.length) {
-                    $('#torrentSearchStatus').text('No results found.');
-                    return;
-                }
-                $('#torrentSearchStatus').text(`Found ${results.length} results.`);
-                results.forEach(item => {
-                    const row = $(`
-                        <tr>
-                            <td>${item.title || '-'}</td>
-                            <td>${formatBytes(item.size)}</td>
-                            <td>${item.seeders ?? '-'}</td>
-                            <td>${item.leechers ?? '-'}</td>
-                            <td>
-                                <button class="btn btn-sm btn-warning queue-torrent-btn"
-                                    data-download-url="${item.download_url}"
-                                    data-title="${item.title || ''}"
-                                    data-title-id="${titleId || ''}"
-                                    data-update-only="true"
-                                    data-expected-version="${version}">
-                                    Queue update
-                                </button>
-                            </td>
-                        </tr>
-                    `);
-                    $('#torrentSearchResults').append(row);
+        runDetailsDownloadSearch({
+            button,
+            request: function () {
+                return $.ajax({
+                    url: "/api/downloads/manual-search",
+                    type: 'POST',
+                    data: JSON.stringify({ title_id: titleId, version: version }),
+                    contentType: "application/json",
                 });
-                $('#detailsDownloadStatus').text('');
             },
-            complete: function () {
-                button.prop('disabled', false);
-            }
+            actionLabel: 'Queue update',
+            buildExtraData: function () {
+                return {
+                    'title-id': titleId || '',
+                    'update-only': 'true',
+                    'expected-version': version,
+                };
+            },
+        });
+    });
+
+    $(document).on('click', '.manual-base-download-btn', function () {
+        const button = $(this);
+        const titleId = button.data('title-id');
+        const query = String(button.data('title-query') || '').trim();
+        if (!query) {
+            return;
+        }
+        runDetailsDownloadSearch({
+            button,
+            request: function () {
+                return $.getJSON(`/api/downloads/search?query=${encodeURIComponent(query)}&apply_settings=1&extra_blacklist=update`);
+            },
+            actionLabel: 'Queue download',
+            buildExtraData: function () {
+                return {
+                    'title-id': titleId || '',
+                    'update-only': 'false',
+                };
+            },
         });
     });
 
@@ -1839,49 +2695,43 @@
             input.focus();
             return;
         }
-        button.prop('disabled', true);
-        $('#detailsDownloadStatus').text('Searching Prowlarr...').removeClass('text-danger text-success').addClass('text-muted');
-        $('#torrentSearchStatus').text('Searching Prowlarr...');
-        $('#torrentSearchResults').empty();
-        const modal = new bootstrap.Modal(document.getElementById('torrentSearchModal'));
-        modal.show();
-        $.getJSON(`/api/downloads/search?query=${encodeURIComponent(query)}`, function (result) {
-            if (!result['success']) {
-                $('#torrentSearchStatus').text(result['message'] || 'Search failed.');
-                return;
-            }
-            const results = result['results'] || [];
-            if (!results.length) {
-                $('#torrentSearchStatus').text('No results found.');
-                return;
-            }
-            $('#torrentSearchStatus').text(`Found ${results.length} results.`);
-            results.forEach(item => {
-                const row = $(`
-                    <tr>
-                        <td>${item.title || '-'}</td>
-                        <td>${formatBytes(item.size)}</td>
-                        <td>${item.seeders ?? '-'}</td>
-                        <td>${item.leechers ?? '-'}</td>
-                        <td>
-                            <button class="btn btn-sm btn-warning queue-torrent-btn"
-                                data-download-url="${item.download_url}"
-                                data-title="${item.title || ''}"
-                                data-title-id="${titleId || ''}"
-                                data-update-only="true"
-                                data-expected-version="${version}">
-                                Queue update
-                            </button>
-                        </td>
-                    </tr>
-                `);
-                $('#torrentSearchResults').append(row);
-            });
-            $('#detailsDownloadStatus').text('');
-        }).fail(function () {
-            $('#torrentSearchStatus').text('Search failed.');
-        }).always(function () {
-            button.prop('disabled', false);
+        runDetailsDownloadSearch({
+            button,
+            request: function () {
+                return $.getJSON(`/api/downloads/search?query=${encodeURIComponent(query)}`);
+            },
+            actionLabel: 'Queue update',
+            buildExtraData: function () {
+                return {
+                    'title-id': titleId || '',
+                    'update-only': 'true',
+                    'expected-version': version,
+                };
+            },
+        });
+    });
+
+    $(document).on('click', '.details-dlc-search-btn', function () {
+        const button = $(this);
+        const titleId = String(button.data('title-id') || '').trim();
+        const query = String(button.data('query') || '').trim();
+        const label = String(button.data('label') || 'DLC').trim();
+        if (!query) {
+            return;
+        }
+        runDetailsDownloadSearch({
+            button,
+            statusMessage: `Searching Prowlarr for ${label}...`,
+            request: function () {
+                return $.getJSON(`/api/downloads/search?query=${encodeURIComponent(query)}&apply_settings=1`);
+            },
+            actionLabel: 'Queue DLC',
+            buildExtraData: function () {
+                return {
+                    'title-id': titleId || '',
+                    'update-only': 'false',
+                };
+            },
         });
     });
 
@@ -1889,68 +2739,13 @@
     function filterBySearchText(attributeText) {
         const text = (attributeText || '').trim();
         localStorage.setItem('searchTerm', text);
-        recomputeFilteredGames();
+        recomputeFilteredGames(true);
     }
 
-    // Set to store active filters
-    const activeTypeFilters = new Set();
-    const activeOwnershipFilters = new Set();
-    const activeUpdateFilters = new Set();
-    const activeCompletionFilters = new Set();
-    const activeRecognitionFilters = new Set();
-
     function updateFilter() {
-        // $('#filterDropdownBtn').toggle();
-        if ($('#filterCheckBase').is(":checked")) {
-            activeTypeFilters.add('BASE');
-        } else {
-            activeTypeFilters.delete('BASE');
-        }
-        if ($('#filterCheckDlc').is(":checked")) {
-            activeTypeFilters.add('DLC');
-        } else {
-            activeTypeFilters.delete('DLC');
-        }
-        if ($('#filterCheckOwned').is(":checked")) {
-            activeOwnershipFilters.add('Owned');
-        } else {
-            activeOwnershipFilters.delete('Owned');
-        }
-        if ($('#filterCheckMissing').is(":checked")) {
-            activeOwnershipFilters.add('Missing');
-        } else {
-            activeOwnershipFilters.delete('Missing');
-        }
-        if ($('#filterCheckUpToDate').is(":checked")) {
-            activeUpdateFilters.add('Up to date');
-        }
-        else {
-            activeUpdateFilters.delete('Up to date');
-        }
-        if ($('#filterCheckMissingUpdate').is(":checked")) {
-            activeUpdateFilters.add('Outdated');
-        }
-        else {
-            activeUpdateFilters.delete('Outdated');
-        }
-        if ($('#filterCheckComplete').is(":checked")) {
-            activeCompletionFilters.add('Complete');
-        }
-        else {
-            activeCompletionFilters.delete('Complete');
-        }
-        if ($('#filterCheckMissingDlc').is(":checked")) {
-            activeCompletionFilters.add('Missing DLC');
-        }
-        else {
-            activeCompletionFilters.delete('Missing DLC');
-        }
-        if ($('#filterCheckUnrecognized').is(":checked")) {
-            activeRecognitionFilters.add('Unrecognized');
-        }
-        else {
-            activeRecognitionFilters.delete('Unrecognized');
-        }
+        Object.keys(FILTER_GROUPS).forEach(groupKey => {
+            activeFilters[groupKey] = getSelectedFilterGroupValue(groupKey);
+        });
     }
 
     function findCommonElements(...arrays) {
@@ -1970,7 +2765,7 @@
 
     // Function to apply filters and show/hide game cards with animation
     function applyFilters() {
-        recomputeFilteredGames();
+        recomputeFilteredGames(true);
     }
 
     // $('#btnApplyFilters').on('click', function () {

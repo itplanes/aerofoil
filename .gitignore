@@ -1,6 +1,7 @@
 __pycache__
 config
 data
+conversion-tmp
 
 # venv
 /bin
@@ -14,9 +15,15 @@ data
 /app/roms
 /ProdKeys
 
+.idea
+.tmp
+run.bat
+AeroFoil start.lnk
+
 # pyenv
 .python-version
 
 # Local docker compose overrides
 docker-compose.dev.local.yml
 docker-compose.local.yml
+/.env

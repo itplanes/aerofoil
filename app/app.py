@@ -10,6 +10,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, s
 from flask_login import LoginManager, current_user
 from werkzeug.utils import secure_filename
 from werkzeug.security import check_password_hash
+from werkzeug.exceptions import RequestEntityTooLarge
 from sqlalchemy import func, and_, or_, case, literal
 from app.scheduler import init_scheduler
 from functools import wraps
@@ -17,17 +18,18 @@ from app.file_watcher import Watcher
 import threading
 import logging
 import copy
+import hashlib
 import flask.cli
 from datetime import timedelta, datetime
 flask.cli.show_server_banner = lambda *args: None
 from app.constants import *
 from app.settings import *
-from app.downloads import ProwlarrClient, test_torrent_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads
-from app.library import organize_library, delete_older_updates, delete_duplicates
+from app.downloads import ProwlarrClient, filter_results, test_download_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results, sort_download_search_results, remove_pending_download
+from app.library import organize_library, delete_older_updates, delete_duplicates, delete_library_content, delete_orphaned_addons
 from app.db import *
 from app.shop import *
 from app.auth import *
-from app.auth import _effective_client_ip
+from app.auth import _effective_client_ip, _is_private_ip, _get_auth_protection_config, _is_permanently_blocked_ip
 from app import titles
 from app.utils import *
 from app.library import *
@@ -45,6 +47,7 @@ import secrets
 import gc
 import ctypes
 import zipfile
+import tempfile
 
 from app.db import add_access_event, get_access_events
 
@@ -93,6 +96,46 @@ def _release_process_memory():
             _malloc_trim(0)
         except Exception:
             pass
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _app_has_deletable_files(app):
+    if app is None or getattr(app, 'id', None) is None:
+        return False
+
+    for file_entry in list(getattr(app, 'files', []) or []):
+        if file_entry is None:
+            continue
+        filepath = str(getattr(file_entry, 'filepath', '') or '').strip()
+        if not filepath:
+            continue
+        linked_apps = [linked for linked in list(getattr(file_entry, 'apps', []) or []) if linked is not None]
+        foreign_apps = [linked for linked in linked_apps if getattr(linked, 'id', None) != getattr(app, 'id', None)]
+        if not foreign_apps:
+            return True
+    return False
+
+
+def _build_deletable_version_map(apps):
+    deletable = {}
+    for app in apps or []:
+        key = (
+            str(getattr(app, 'app_id', '') or '').strip().upper(),
+            str(getattr(app, 'app_type', '') or '').strip().upper(),
+            str(getattr(app, 'app_version', '') or '').strip(),
+        )
+        if not all(key):
+            continue
+        deletable[key] = bool(deletable.get(key)) or (
+            bool(getattr(app, 'owned', False)) and _app_has_deletable_files(app)
+        )
+    return deletable
 
 def _media_variant_dirname(media_kind, size_override=None):
     if media_kind == 'icon':
@@ -427,7 +470,8 @@ shop_sections_cache = {
     'limit': None,
     'timestamp': 0,
     'state_token': None,
-    'payload': None
+    'payload': None,
+    'encrypted': {},
 }
 shop_sections_cache_lock = threading.Lock()
 shop_sections_refresh_lock = threading.Lock()
@@ -439,7 +483,8 @@ shop_root_cache = {
     'encrypted': {},
 }
 _SHOP_ROOT_ENCRYPTED_CACHE_LIMIT = 8
-_TITLES_METADATA_CACHE_VERSION = 2
+_SHOP_SECTIONS_ENCRYPTED_CACHE_LIMIT = 8
+_TITLES_METADATA_CACHE_VERSION = 3
 titles_metadata_cache_lock = threading.Lock()
 titles_metadata_cache = {
     'version': _TITLES_METADATA_CACHE_VERSION,
@@ -448,6 +493,14 @@ titles_metadata_cache = {
     'title_name_map': {},
     'genre_title_ids': {},
     'unrecognized_title_ids': set(),
+}
+titles_total_cache_lock = threading.Lock()
+titles_total_cache = {}
+library_size_cache_lock = threading.Lock()
+library_size_cache = {
+    'state_token': None,
+    'total_bytes': 0,
+    'updated_at': 0.0,
 }
 request_settings_sync_lock = threading.Lock()
 request_settings_last_sync_ts = 0.0
@@ -510,6 +563,44 @@ def _get_titledb_aware_state_token():
         titledb_token = 'missing'
     return f"{library_token}::{titledb_token}"
 
+
+def _get_cached_titles_total(cache_key):
+    if TITLES_TOTAL_CACHE_TTL_S == 0:
+        return None
+    now = time.time()
+    with titles_total_cache_lock:
+        cached = titles_total_cache.get(cache_key)
+        if not isinstance(cached, dict):
+            return None
+        if TITLES_TOTAL_CACHE_TTL_S is not None:
+            age = now - float(cached.get('timestamp') or 0.0)
+            if age > float(TITLES_TOTAL_CACHE_TTL_S):
+                titles_total_cache.pop(cache_key, None)
+                return None
+        try:
+            return int(cached.get('total') or 0)
+        except Exception:
+            return None
+
+
+def _store_titles_total(cache_key, total):
+    if TITLES_TOTAL_CACHE_TTL_S == 0:
+        return
+    with titles_total_cache_lock:
+        titles_total_cache[cache_key] = {
+            'total': int(total or 0),
+            'timestamp': time.time(),
+        }
+        if len(titles_total_cache) > TITLES_TOTAL_CACHE_MAX_ENTRIES:
+            ordered = sorted(
+                titles_total_cache.items(),
+                key=lambda kv: float((kv[1] or {}).get('timestamp') or 0.0),
+                reverse=True,
+            )[:TITLES_TOTAL_CACHE_MAX_ENTRIES]
+            titles_total_cache.clear()
+            for key, value in ordered:
+                titles_total_cache[key] = value
+
 def _get_cached_shop_files():
     state_token = get_library_cache_state_token()
     with shop_root_cache_lock:
@@ -517,7 +608,7 @@ def _get_cached_shop_files():
             shop_root_cache.get('state_token') == state_token
             and isinstance(shop_root_cache.get('files'), list)
         ):
-            return list(shop_root_cache['files'])
+            return shop_root_cache['files']
 
     rows = db.session.query(Files.id, Files.filename, Files.size).all()
     files_payload = [
@@ -532,7 +623,7 @@ def _get_cached_shop_files():
         shop_root_cache['state_token'] = state_token
         shop_root_cache['files'] = files_payload
         shop_root_cache['encrypted'] = {}
-    return list(files_payload)
+    return files_payload
 
 def _get_cached_encrypted_shop_payload(shop_payload, public_key, verified_host):
     state_token = get_library_cache_state_token()
@@ -554,6 +645,54 @@ def _get_cached_encrypted_shop_payload(shop_payload, public_key, verified_host):
             ordered_keys = list(encrypted_cache.keys())[-_SHOP_ROOT_ENCRYPTED_CACHE_LIMIT:]
             shop_root_cache['encrypted'] = {k: encrypted_cache[k] for k in ordered_keys}
     return payload
+
+
+def _get_cached_encrypted_shop_sections_payload(shop_payload, public_key, cache_limit, full_catalog=False):
+    state_token = _get_titledb_aware_state_token()
+    cache_key = (state_token, int(cache_limit), bool(full_catalog), str(public_key or ''))
+
+    with shop_sections_cache_lock:
+        encrypted_cache = shop_sections_cache.setdefault('encrypted', {})
+        cached = encrypted_cache.get(cache_key)
+        if isinstance(cached, (bytes, bytearray)):
+            return bytes(cached)
+
+    payload = encrypt_shop(shop_payload, public_key_pem=public_key, compression_level=6)
+    with shop_sections_cache_lock:
+        encrypted_cache = shop_sections_cache.setdefault('encrypted', {})
+        encrypted_cache[cache_key] = payload
+        if len(encrypted_cache) > _SHOP_SECTIONS_ENCRYPTED_CACHE_LIMIT:
+            ordered_keys = list(encrypted_cache.keys())[-_SHOP_SECTIONS_ENCRYPTED_CACHE_LIMIT:]
+            shop_sections_cache['encrypted'] = {k: encrypted_cache[k] for k in ordered_keys}
+    return payload
+
+
+def _respond_with_shop_payload(payload, verified_host=None, cache_kind=None, cache_limit=None, full_catalog=False):
+    response_payload = payload
+    if verified_host is not None and not response_payload.get('referrer'):
+        response_payload = dict(response_payload)
+        response_payload['referrer'] = f"https://{verified_host}"
+
+    if app_settings['shop']['encrypt']:
+        public_key = app_settings['shop'].get('public_key')
+        if cache_kind == 'root':
+            encrypted = _get_cached_encrypted_shop_payload(
+                response_payload,
+                public_key=public_key,
+                verified_host=verified_host,
+            )
+        elif cache_kind == 'sections':
+            encrypted = _get_cached_encrypted_shop_sections_payload(
+                response_payload,
+                public_key=public_key,
+                cache_limit=cache_limit,
+                full_catalog=full_catalog,
+            )
+        else:
+            encrypted = encrypt_shop(response_payload, public_key_pem=public_key, compression_level=6)
+        return Response(encrypted, mimetype='application/octet-stream')
+
+    return jsonify(response_payload)
 
 def _is_titledb_unrecognized(info):
     try:
@@ -582,12 +721,19 @@ def _split_genres_value(raw):
 def _normalize_library_search_text(text):
     value = str(text or '')
     try:
-        value = unicodedata.normalize('NFKD', value)
-        value = value.encode('ascii', 'ignore').decode('ascii')
+        # Keep Unicode letters (e.g. CJK), but normalize width/compat forms.
+        value = unicodedata.normalize('NFKC', value)
+        # Fold accents for Latin-like scripts while keeping non-Latin letters.
+        value = ''.join(
+            ch for ch in unicodedata.normalize('NFKD', value)
+            if unicodedata.category(ch) != 'Mn'
+        )
     except Exception:
         pass
-    value = re.sub(r"[^A-Za-z0-9\s]+", " ", value)
-    return re.sub(r"\s+", " ", value).strip().lower()
+    value = value.casefold()
+    value = re.sub(r"_+", " ", value)
+    value = re.sub(r"[^\w\s]+", " ", value, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", value).strip()
 
 def _search_matches_normalized_text(query_normalized, field_value):
     hay = _normalize_library_search_text(field_value)
@@ -681,6 +827,23 @@ def _get_cached_library_genres():
     metadata = _get_cached_titles_metadata()
     return list(metadata.get('genres') or [])
 
+
+def _sort_library_rows_by_title_name(rows, title_name_map, descending=False):
+    title_name_map = title_name_map or {}
+
+    def _sort_key(row):
+        title_id = str(getattr(row, 'title_id', '') or '').strip().upper()
+        app_id = str(getattr(row, 'app_id', '') or '').strip().upper()
+        normalized_name = str(title_name_map.get(title_id) or '').strip()
+        fallback_name = _normalize_library_search_text(title_id or app_id)
+        return (
+            normalized_name or fallback_name,
+            title_id,
+            app_id,
+        )
+
+    return sorted(rows, key=_sort_key, reverse=bool(descending))
+
 def _get_discovery_sections(limit=12):
     try:
         limit = max(1, int(limit))
@@ -741,12 +904,16 @@ def _get_discovery_sections(limit=12):
 # Set to 0 to disable in-memory caching entirely.
 # Set to None to disable expiry (cache refreshes on library rebuild).
 SHOP_SECTIONS_CACHE_TTL_S = _read_cache_ttl('SHOP_SECTIONS_CACHE_TTL_S', None)
-SHOP_SECTIONS_ALL_ITEMS_CAP = _read_cache_ttl('SHOP_SECTIONS_ALL_ITEMS_CAP', 300)
+SHOP_SECTIONS_ALL_ITEMS_CAP = _read_cache_ttl('SHOP_SECTIONS_ALL_ITEMS_CAP', None)
 SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB = _read_cache_ttl('SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB', 120)
 SHOP_SECTIONS_MAX_IN_MEMORY_BYTES = _read_cache_ttl('SHOP_SECTIONS_MAX_IN_MEMORY_BYTES', 4 * 1024 * 1024)
 MEDIA_INDEX_TTL_S = _read_cache_ttl('MEDIA_INDEX_TTL_S', None)
 REQUEST_SETTINGS_SYNC_INTERVAL_S = _read_cache_ttl('REQUEST_SETTINGS_SYNC_INTERVAL_S', 5)
 MISSING_FILES_SWEEP_INTERVAL_S = _read_cache_ttl('MISSING_FILES_SWEEP_INTERVAL_S', 21600)
+TITLES_TOTAL_CACHE_TTL_S = _read_cache_ttl('AEROFOIL_TITLES_TOTAL_CACHE_TTL_S', 300)
+TITLES_TOTAL_CACHE_TTL_S = _read_cache_ttl('OWNFOIL_TITLES_TOTAL_CACHE_TTL_S', TITLES_TOTAL_CACHE_TTL_S)
+TITLES_TOTAL_CACHE_MAX_ENTRIES = _read_int_env('AEROFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES', 256, minimum=16, maximum=4096)
+TITLES_TOTAL_CACHE_MAX_ENTRIES = _read_int_env('OWNFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES', TITLES_TOTAL_CACHE_MAX_ENTRIES, minimum=16, maximum=4096)
 # ===============================
 
 def _load_shop_sections_cache_from_disk():
@@ -812,11 +979,13 @@ def _store_shop_sections_cache(payload, limit, timestamp, state_token, persist_d
             shop_sections_cache['limit'] = None
             shop_sections_cache['timestamp'] = 0
             shop_sections_cache['state_token'] = None
+            shop_sections_cache['encrypted'] = {}
         else:
             shop_sections_cache['payload'] = cache_payload
             shop_sections_cache['limit'] = limit
             shop_sections_cache['timestamp'] = timestamp
             shop_sections_cache['state_token'] = state_token
+            shop_sections_cache['encrypted'] = {}
 
     if persist_disk:
         _save_shop_sections_cache_to_disk(payload, limit, timestamp, state_token=state_token)
@@ -867,7 +1036,7 @@ def _read_proc_meminfo_bytes():
         'vms_bytes': values.get('VmSize')
     }
 
-def _build_shop_sections_payload(limit):
+def _build_shop_sections_payload(limit, full_catalog=False):
     try:
         limit = int(limit or 50)
     except (TypeError, ValueError):
@@ -918,12 +1087,6 @@ def _build_shop_sections_payload(limit):
         .all()
     )
 
-    def _safe_int(value, default=0):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
     info_cache = {}
 
     with titles.titledb_session() as titledb_loaded:
@@ -956,6 +1119,8 @@ def _build_shop_sections_payload(limit):
                 name = title_id or app_id
                 title_name = title_id or name
                 category = ''
+            icon_url = f'/api/shop/icon/{title_id}' if title_id else ((app_info or {}).get('iconUrl') or '')
+
             return {
                 'name': name,
                 'title_name': title_name,
@@ -964,7 +1129,8 @@ def _build_shop_sections_payload(limit):
                 'app_version': row.app_version,
                 'app_type': row.app_type,
                 'category': category,
-                'icon_url': f'/api/shop/icon/{title_id}' if title_id else '',
+                'icon_url': icon_url,
+                'iconUrl': icon_url,
                 'url': f"/api/get_game/{int(row.file_id)}#{row.filename}",
                 'size': int(row.size or 0),
                 'file_id': int(row.file_id),
@@ -985,13 +1151,14 @@ def _build_shop_sections_payload(limit):
             recommended_items = new_items[:discovery_limit]
 
         all_limit = None
-        if SHOP_SECTIONS_ALL_ITEMS_CAP is not None:
-            cap_value = int(SHOP_SECTIONS_ALL_ITEMS_CAP)
-            if not titledb_loaded and SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB is not None:
-                cap_value = min(cap_value, int(SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB))
-            all_limit = max(limit, cap_value)
-
-        updates_dlc_limit = all_limit if all_limit is not None else limit
+        updates_dlc_limit = None
+        if not full_catalog:
+            if SHOP_SECTIONS_ALL_ITEMS_CAP is not None:
+                cap_value = int(SHOP_SECTIONS_ALL_ITEMS_CAP)
+                if not titledb_loaded and SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB is not None:
+                    cap_value = min(cap_value, int(SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB))
+                all_limit = max(limit, cap_value)
+            updates_dlc_limit = all_limit if all_limit is not None else limit
 
         latest_update_by_title_id = {}
         for row in rows:
@@ -1011,7 +1178,10 @@ def _build_shop_sections_payload(limit):
             if item
         ]
         update_items_full.sort(key=lambda item: _safe_int(item['app_version']), reverse=True)
-        update_items = update_items_full[:updates_dlc_limit]
+        if updates_dlc_limit is None:
+            update_items = update_items_full
+        else:
+            update_items = update_items_full[:updates_dlc_limit]
 
         latest_dlc_by_app_id = {}
         for row in rows:
@@ -1031,7 +1201,10 @@ def _build_shop_sections_payload(limit):
             if item
         ]
         dlc_items_full.sort(key=lambda item: _safe_int(item['app_version']), reverse=True)
-        dlc_items = dlc_items_full[:updates_dlc_limit]
+        if updates_dlc_limit is None:
+            dlc_items = dlc_items_full
+        else:
+            dlc_items = dlc_items_full[:updates_dlc_limit]
 
         all_total = len(base_items) + len(update_items_full) + len(dlc_items_full)
         all_items = sorted(
@@ -1113,6 +1286,28 @@ logging.getLogger('werkzeug').addFilter(FilterRemoveDateFromWerkzeugLogs())
 # Suppress specific Alembic INFO logs
 logging.getLogger('alembic.runtime.migration').setLevel(logging.WARNING)
 
+def _configure_upload_tempdir():
+    configured = (
+        os.environ.get('AEROFOIL_UPLOAD_TMP_DIR')
+        or os.environ.get('OWNFOIL_UPLOAD_TMP_DIR')
+        or os.path.join(DATA_DIR, 'tmp', 'uploads')
+    )
+    upload_tmp_dir = str(configured).strip()
+    if not upload_tmp_dir:
+        return
+    try:
+        os.makedirs(upload_tmp_dir, exist_ok=True)
+        tempfile.tempdir = upload_tmp_dir
+        # Keep environment hints aligned for subprocesses/libs that inspect these.
+        os.environ['TMPDIR'] = upload_tmp_dir
+        os.environ['TMP'] = upload_tmp_dir
+        os.environ['TEMP'] = upload_tmp_dir
+        logger.info('Using upload temp directory: %s', upload_tmp_dir)
+    except Exception:
+        logger.exception('Failed to configure upload temp directory: %s', upload_tmp_dir)
+
+_configure_upload_tempdir()
+
 # API response helper functions for consistent error handling
 def api_error(message, status_code=400, error_code=None):
     """Return a standardized error response."""
@@ -1134,6 +1329,26 @@ def api_success(data=None, message=None):
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB for keys.txt files
 MAX_LIBRARY_UPLOAD_SIZE = 64 * 1024 * 1024 * 1024  # 64GB for game files
 MAX_SAVE_UPLOAD_SIZE = 4 * 1024 * 1024 * 1024  # 4GB for save archives
+# Leave room for multipart form overhead beyond the file payload itself.
+DEFAULT_WSGI_MAX_REQUEST_BODY_SIZE = MAX_LIBRARY_UPLOAD_SIZE + (128 * 1024 * 1024)
+ACTIVITY_API_MAX_LIMIT = _read_int_env(
+    'AEROFOIL_ACTIVITY_API_MAX_LIMIT',
+    _read_int_env('OWNFOIL_ACTIVITY_API_MAX_LIMIT', 10000, minimum=100, maximum=200000),
+    minimum=100,
+    maximum=200000,
+)
+CLIENTS_HISTORY_API_MAX_LIMIT = _read_int_env(
+    'AEROFOIL_CLIENTS_HISTORY_API_MAX_LIMIT',
+    _read_int_env('OWNFOIL_CLIENTS_HISTORY_API_MAX_LIMIT', 20000, minimum=100, maximum=200000),
+    minimum=100,
+    maximum=200000,
+)
+CLIENTS_HISTORY_CSV_MAX_LIMIT = _read_int_env(
+    'AEROFOIL_CLIENTS_HISTORY_CSV_MAX_LIMIT',
+    _read_int_env('OWNFOIL_CLIENTS_HISTORY_CSV_MAX_LIMIT', 50000, minimum=100, maximum=200000),
+    minimum=100,
+    maximum=200000,
+)
 SAVE_SYNC_DIR = os.path.join(DATA_DIR, 'saves')
 MAX_TITLE_ID_LENGTH = 16
 MAX_SAVE_NOTE_LENGTH = 120
@@ -1198,12 +1413,13 @@ def _resolve_save_sync_user():
         if user is None or not check_password_hash(user.password, auth.password):
             return None, 'Invalid save sync credentials.', 401
 
-        if bool(getattr(user, 'frozen', False)):
-            message = (getattr(user, 'frozen_message', None) or '').strip() or 'Account is frozen.'
-            return None, message, 403
+    if bool(getattr(user, 'frozen', False)):
+        message = (getattr(user, 'frozen_message', None) or '').strip() or 'Account is frozen.'
+        return None, message, 403
 
-        if not user.has_shop_access():
-            return None, f'User "{auth.username}" does not have access to the shop.', 403
+    if not user.has_shop_access():
+        username = str(getattr(user, 'user', '') or '').strip() or 'unknown'
+        return None, f'User "{username}" does not have access to the shop.', 403
 
     if not bool(getattr(user, 'backup_access', False)):
         return None, 'Backup access is required for save sync.', 403
@@ -1616,6 +1832,9 @@ def on_library_change(events):
 def create_app():
     app = Flask(__name__)
     app.config["SQLALCHEMY_DATABASE_URI"] = AEROFOIL_DB
+    static_max_age = _read_int_env('AEROFOIL_STATIC_MAX_AGE_S', 3600, minimum=0, maximum=31536000)
+    static_max_age = _read_int_env('OWNFOIL_STATIC_MAX_AGE_S', static_max_age, minimum=0, maximum=31536000)
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = int(static_max_age)
     # Generate secret key from environment variable or create random one
     secret_key = os.getenv('AEROFOIL_SECRET_KEY') or os.getenv('OWNFOIL_SECRET_KEY')
     if not secret_key:
@@ -1637,12 +1856,114 @@ def create_app():
 app = create_app()
 
 
+@app.errorhandler(RequestEntityTooLarge)
+def handle_request_entity_too_large(_error):
+    return api_error(
+        f"Upload too large. Maximum allowed is {MAX_LIBRARY_UPLOAD_SIZE // (1024 * 1024 * 1024)}GB per file.",
+        413
+    )
+
+
+@app.before_request
+def _block_permanent_blacklist_requests():
+    try:
+        settings = {}
+        try:
+            settings = load_settings()
+        except Exception:
+            settings = {}
+        auth_config = _get_auth_protection_config(settings)
+        client_ip = _effective_client_ip(settings)
+        geo = {}
+        if client_ip and not _is_private_ip(client_ip):
+            try:
+                geo = lookup_geoip(client_ip) or {}
+            except Exception:
+                geo = {}
+
+        if _is_permanently_blocked_ip(client_ip, auth_config):
+            try:
+                _log_access_dedup(
+                    kind='permanent_ip_blocked',
+                    dedupe_key=f"{client_ip}|{request.path}",
+                    ok=False,
+                    status_code=404,
+                    filename=request.path,
+                    remote_addr=client_ip,
+                    user_agent=request.headers.get('User-Agent'),
+                    country=geo.get('country'),
+                    country_code=geo.get('country_code'),
+                    region=geo.get('region'),
+                    city=geo.get('city'),
+                    latitude=geo.get('latitude'),
+                    longitude=geo.get('longitude'),
+                )
+            except Exception:
+                pass
+            return Response(status=404)
+
+        blocked_country_codes = {
+            str(code or '').strip().upper()
+            for code in ((settings.get('security') or {}).get('auth_blocked_country_codes') or [])
+            if str(code or '').strip()
+        }
+        allowed_country_codes = {
+            str(code or '').strip().upper()
+            for code in ((settings.get('security') or {}).get('auth_allowed_country_codes') or [])
+            if str(code or '').strip()
+        }
+        country_code = str(geo.get('country_code') or '').strip().upper()
+        if blocked_country_codes and country_code and country_code in blocked_country_codes:
+            try:
+                _log_access_dedup(
+                    kind='country_blocked',
+                    dedupe_key=f"{client_ip}|{request.path}|{country_code}",
+                    ok=False,
+                    status_code=404,
+                    filename=request.path,
+                    remote_addr=client_ip,
+                    user_agent=request.headers.get('User-Agent'),
+                    country=geo.get('country'),
+                    country_code=country_code,
+                    region=geo.get('region'),
+                    city=geo.get('city'),
+                    latitude=geo.get('latitude'),
+                    longitude=geo.get('longitude'),
+                )
+            except Exception:
+                pass
+            return Response(status=404)
+        if allowed_country_codes and country_code and country_code not in allowed_country_codes:
+            try:
+                _log_access_dedup(
+                    kind='country_not_whitelisted',
+                    dedupe_key=f"{client_ip}|{request.path}|{country_code}|allow",
+                    ok=False,
+                    status_code=404,
+                    filename=request.path,
+                    remote_addr=client_ip,
+                    user_agent=request.headers.get('User-Agent'),
+                    country=geo.get('country'),
+                    country_code=country_code,
+                    region=geo.get('region'),
+                    city=geo.get('city'),
+                    latitude=geo.get('latitude'),
+                    longitude=geo.get('longitude'),
+                )
+            except Exception:
+                pass
+            return Response(status=404)
+    except Exception:
+        return None
+    return None
+
+
 @app.before_request
 def _block_frozen_web_ui():
     """Frozen accounts should only see the MOTD page in the web UI."""
     try:
         # Let Tinfoil/Cyberfoil flows be handled by tinfoil_access.
-        if all(header in request.headers for header in TINFOIL_HEADERS):
+        if _is_shop_client_request():
             return None
 
         if not current_user.is_authenticated:
@@ -1683,6 +2004,7 @@ _transfer_finalize_timers_lock = threading.Lock()
 _transfer_finalize_timers = {}
 
 _TRANSFER_FINALIZE_GRACE_S = 30
+_ACTIVE_TRANSFER_STALE_S = 300
 
 
 def _get_request_user():
@@ -1733,7 +2055,7 @@ def _client_key():
     ua = request.headers.get('User-Agent') or '-'
     uid = ''
     try:
-        if all(header in request.headers for header in TINFOIL_HEADERS):
+        if _is_shop_client_request():
             uid = (request.headers.get('Uid') or '').strip()
     except Exception:
         uid = ''
@@ -1742,7 +2064,7 @@ def _client_key():
 
 def _extract_tinfoil_client_meta():
     try:
-        if not all(header in request.headers for header in TINFOIL_HEADERS):
+        if not _is_shop_client_request():
             return {}
     except Exception:
         return {}
@@ -1866,10 +2188,86 @@ def _touch_client():
     except Exception:
         pass
 
+    try:
+        try:
+            is_shop_client = _is_shop_client_request()
+        except Exception:
+            is_shop_client = False
+        if not is_shop_client:
+            return
+        username = meta.get('user')
+        if not username:
+            return
+        user = User.query.filter_by(user=username).first()
+        if user is None:
+            return
+        uid_value = (tinfoil_meta.get('uid') or '').strip() if tinfoil_meta else ''
+        remote = (meta.get('remote_addr') or '').strip()
+        geo = {}
+        if remote:
+            try:
+                if not _is_private_ip(remote):
+                    geo = lookup_geoip(remote) or {}
+            except Exception:
+                geo = {}
+        updated = False
+        if uid_value and uid_value != (user.client_uid or ''):
+            user.client_uid = uid_value
+            updated = True
+        user.last_login_at = utc_now()
+        user.last_login_ip = remote or user.last_login_ip
+        user.last_login_country = geo.get('country') or user.last_login_country
+        user.last_login_country_code = geo.get('country_code') or user.last_login_country_code
+        updated = True
+        if updated:
+            db.session.commit()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+    try:
+        if tinfoil_meta and (tinfoil_meta.get('uid') or '').strip():
+            username = meta.get('user')
+            if username:
+                user = User.query.filter_by(user=username).first()
+                if user is not None:
+                    uid_value = (tinfoil_meta.get('uid') or '').strip()
+                    updated = False
+                    if uid_value and uid_value != (user.client_uid or ''):
+                        user.client_uid = uid_value
+                        updated = True
+                    if updated:
+                        db.session.commit()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
 
 def _is_cyberfoil_request():
     ua = request.headers.get('User-Agent') or ''
-    return 'Cyberfoil' in ua
+    return 'cyberfoil' in ua.lower()
+
+
+def _is_tinfoil_request():
+    ua = request.headers.get('User-Agent') or ''
+    return 'tinfoil' in ua.lower()
+
+
+def _has_tinfoil_header_set():
+    return all(header in request.headers for header in TINFOIL_HEADERS)
+
+
+def _is_shop_client_allowed_for_external():
+    return _is_tinfoil_request() or _is_cyberfoil_request()
+
+
+def _is_shop_client_request():
+    # Primary detection for shop protocol traffic.
+    return _has_tinfoil_header_set() or _is_shop_client_allowed_for_external()
 
 
 def _log_access(
@@ -1884,6 +2282,12 @@ def _log_access(
     user=None,
     remote_addr=None,
     user_agent=None,
+    country=None,
+    country_code=None,
+    region=None,
+    city=None,
+    latitude=None,
+    longitude=None,
 ):
     if has_request_context():
         if user is None:
@@ -1892,6 +2296,19 @@ def _log_access(
             remote_addr = _effective_remote_addr()
         if user_agent is None:
             user_agent = request.headers.get('User-Agent')
+        if country is None:
+            try:
+                from app.auth import _is_private_ip
+                if remote_addr and not _is_private_ip(remote_addr):
+                    geo = lookup_geoip(remote_addr) or {}
+                    country = geo.get('country')
+                    country_code = geo.get('country_code')
+                    region = geo.get('region')
+                    city = geo.get('city')
+                    latitude = geo.get('latitude')
+                    longitude = geo.get('longitude')
+            except Exception:
+                pass
 
     def _do_write():
         add_access_event(
@@ -1899,6 +2316,12 @@ def _log_access(
             user=user,
             remote_addr=remote_addr,
             user_agent=user_agent,
+            country=country,
+            country_code=country_code,
+            region=region,
+            city=city,
+            latitude=latitude,
+            longitude=longitude,
             title_id=title_id,
             file_id=file_id,
             filename=filename,
@@ -2140,6 +2563,32 @@ def _transfer_session_finish(key, ok, status_code, bytes_sent):
                 pass
         _transfer_finalize_timers[key] = timer
     timer.start()
+
+
+def _prune_stale_active_transfers(now=None, stale_after_s=None):
+    current_ts = float(now if now is not None else time.time())
+    stale_s = float(stale_after_s if stale_after_s is not None else _ACTIVE_TRANSFER_STALE_S)
+    removed = []
+    with _active_transfers_lock:
+        for transfer_id, meta in list(_active_transfers.items()):
+            if not isinstance(meta, dict):
+                _active_transfers.pop(transfer_id, None)
+                removed.append(transfer_id)
+                continue
+            last_seen_at = float(meta.get('last_seen_at') or meta.get('started_at') or 0.0)
+            if last_seen_at <= 0:
+                _active_transfers.pop(transfer_id, None)
+                removed.append(transfer_id)
+                continue
+            if (current_ts - last_seen_at) > stale_s:
+                _active_transfers.pop(transfer_id, None)
+                removed.append(transfer_id)
+    if removed:
+        try:
+            logger.warning("Pruned %s stale live transfer entries.", len(removed))
+        except Exception:
+            pass
+    return removed
 
 
 @app.before_request
@@ -2411,12 +2860,13 @@ def tinfoil_access(f):
         _maybe_sync_request_settings()
         hauth_success = None
         auth_success = None
+        auth_error = None
         request.verified_host = None
-        is_tinfoil_client = all(header in request.headers for header in TINFOIL_HEADERS)
+        is_shop_client = _is_shop_client_request()
         # Host verification to prevent hotlinking
         #Tinfoil doesn't send Hauth for file grabs, only directories, so ignore get_game endpoints.
         host_verification = (
-            is_tinfoil_client
+            is_shop_client
             and "/api/get_game" not in request.path
             and (request.is_secure or request.headers.get("X-Forwarded-Proto") == "https")
         )
@@ -2469,7 +2919,7 @@ def tinfoil_access(f):
             if not auth_success:
                 # If the account is frozen, return safe empty responses so clients can display the MOTD.
                 try:
-                    if is_tinfoil_client and request.path in ('/', '/api/shop/sections', '/api/frozen/notice'):
+                    if is_shop_client and request.path in ('/', '/api/shop/sections', '/api/frozen/notice'):
                         username = _get_request_user()
                         frozen_user = User.query.filter_by(user=username).first() if username else None
                         if frozen_user is not None and bool(getattr(frozen_user, 'frozen', False)):
@@ -2499,18 +2949,27 @@ def tinfoil_access(f):
                                         {'id': 'all', 'title': 'All', 'items': [placeholder_item]},
                                     ]
                                 }
-                                return jsonify(empty_sections)
+                                return _respond_with_shop_payload(empty_sections)
 
                             placeholder = {"url": "/api/frozen/notice#frozen.txt", "size": 1}
                             shop = {"success": message, "files": [placeholder]}
-                            if request.verified_host is not None:
-                                shop["referrer"] = f"https://{request.verified_host}"
-                            if app_settings['shop']['encrypt']:
-                                return Response(encrypt_shop(shop, app_settings['shop'].get('public_key')), mimetype='application/octet-stream')
-                            return jsonify(shop)
+                            return _respond_with_shop_payload(shop, verified_host=request.verified_host)
                 except Exception:
                     pass
                 return tinfoil_error(auth_error)
+
+        # External-client restriction: allow authenticated get_game requests even when
+        # the client omits Tinfoil/CyberFoil markers on file-transfer requests.
+        if bool(app_settings.get('shop', {}).get('external_tinfoil_only', False)):
+            remote = _effective_remote_addr()
+            if remote and not _is_private_ip(remote) and not is_shop_client:
+                allow_via_auth_for_get_game = False
+                if request.path.startswith('/api/get_game/'):
+                    if auth_success is None:
+                        auth_success, auth_error, _ = basic_auth(request)
+                    allow_via_auth_for_get_game = bool(auth_success)
+                if not allow_via_auth_for_get_game:
+                    return jsonify({'error': 'External access is restricted to Tinfoil/CyberFoil clients.'}), 403
 
         # Auth success: block frozen accounts from accessing the library.
         try:
@@ -2524,7 +2983,7 @@ def tinfoil_access(f):
                 message = (getattr(frozen_user, 'frozen_message', None) or '').strip() or 'Account is frozen.'
 
                 # Allow safe empty responses for the shop root + sections.
-                if is_tinfoil_client and request.path in ('/', '/api/shop/sections', '/api/frozen/notice'):
+                if is_shop_client and request.path in ('/', '/api/shop/sections', '/api/frozen/notice'):
                     if request.path == '/api/shop/sections':
                         placeholder_item = {
                             'name': 'Account frozen',
@@ -2550,15 +3009,11 @@ def tinfoil_access(f):
                                 {'id': 'all', 'title': 'All', 'items': [placeholder_item]},
                             ]
                         }
-                        return jsonify(empty_sections)
+                        return _respond_with_shop_payload(empty_sections)
 
                     placeholder = {"url": "/api/frozen/notice#frozen.txt", "size": 1}
                     shop = {"success": message, "files": [placeholder]}
-                    if request.verified_host is not None:
-                        shop["referrer"] = f"https://{request.verified_host}"
-                    if app_settings['shop']['encrypt']:
-                        return Response(encrypt_shop(shop, app_settings['shop'].get('public_key')), mimetype='application/octet-stream')
-                    return jsonify(shop)
+                    return _respond_with_shop_payload(shop, verified_host=request.verified_host)
 
                 return tinfoil_error(message)
         except Exception:
@@ -2582,6 +3037,7 @@ def access_shop():
         admin_account_created=admin_account_created(),
         valid_keys=app_settings['titles']['valid_keys'],
         identification_disabled=not app_settings['titles']['valid_keys'],
+        download_ui_visibility=_get_download_template_visibility(),
     )
 
 @access_required('shop')
@@ -2590,6 +3046,14 @@ def access_shop_auth():
 
 @app.route('/')
 def index():
+    is_shop_client = _is_shop_client_request()
+    is_allowed_external_client = _is_shop_client_request()
+    tinfoil_only_mode = bool((app_settings.get('shop') or {}).get('tinfoil_only_mode', False))
+    prefers_html = bool(request.accept_mimetypes.accept_html)
+    if bool(app_settings.get('shop', {}).get('external_tinfoil_only', False)):
+        remote = _effective_remote_addr()
+        if remote and not _is_private_ip(remote) and not is_allowed_external_client:
+            return 'Forbidden', 403
 
     @tinfoil_access
     def access_tinfoil_shop():
@@ -2597,11 +3061,6 @@ def index():
         shop = {
             "success": app_settings['shop']['motd']
         }
-        
-        if request.verified_host is not None:
-            # enforce client side host verification
-            shop["referrer"] = f"https://{request.verified_host}"
-            
         shop["files"] = _get_cached_shop_files()
 
         if _is_cyberfoil_request():
@@ -2613,19 +3072,16 @@ def index():
                 duration_ms=int((time.time() - start_ts) * 1000),
             )
 
-        if app_settings['shop']['encrypt']:
-            encrypted = _get_cached_encrypted_shop_payload(
-                shop,
-                public_key=app_settings['shop'].get('public_key'),
-                verified_host=request.verified_host
-            )
-            return Response(encrypted, mimetype='application/octet-stream')
-
-        return jsonify(shop)
+        return _respond_with_shop_payload(shop, verified_host=request.verified_host, cache_kind='root')
     
-    if all(header in request.headers for header in TINFOIL_HEADERS):
-    # if True:
-        logger.info(f"Tinfoil connection from {request.remote_addr}")
+    if is_shop_client or (tinfoil_only_mode and not prefers_html):
+        logger.info(
+            "Serving shop protocol response from %s (client_detected=%s, tinfoil_only_mode=%s, prefers_html=%s)",
+            request.remote_addr,
+            bool(is_shop_client),
+            bool(tinfoil_only_mode),
+            bool(prefers_html),
+        )
         return access_tinfoil_shop()
 
     # Frozen accounts: web UI should only show the MOTD message.
@@ -2681,7 +3137,8 @@ def downloads_page():
     return render_template(
         'downloads.html',
         title='Downloads',
-        admin_account_created=admin_account_created())
+        admin_account_created=admin_account_created(),
+        download_ui_visibility=_get_download_template_visibility())
 
 @app.route('/upload')
 @access_required('admin')
@@ -2716,7 +3173,8 @@ def requests_page():
     return render_template(
         'requests.html',
         title='Requests',
-        admin_account_created=admin_account_created())
+        admin_account_created=admin_account_created(),
+        download_ui_visibility=_get_download_template_visibility())
 
 
 @app.route('/saves')
@@ -2858,12 +3316,12 @@ def admin_mark_requests_seen_api():
 
     now = None
     try:
-        now = datetime.utcnow()
+        now = utc_now()
     except Exception:
         now = None
 
     try:
-        ts = now or datetime.utcnow()
+        ts = now or utc_now()
 
         if mark_all_open:
             select_stmt = (
@@ -2979,6 +3437,54 @@ def _normalize_download_search_query(text, downloads_settings=None):
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _get_download_filter_thresholds(downloads):
+    downloads = downloads or {}
+    torrent_cfg = downloads.get('torrent_client') or {}
+    usenet_cfg = downloads.get('usenet_client') or {}
+    try:
+        min_seeders = int(torrent_cfg.get('min_seeders') or 0)
+    except (TypeError, ValueError):
+        min_seeders = 0
+    try:
+        min_age_minutes = int(usenet_cfg.get('min_age_minutes') or 0)
+    except (TypeError, ValueError):
+        min_age_minutes = 0
+    return max(min_seeders, 0), max(min_age_minutes, 0)
+
+
+def _get_prowlarr_search_limit(prowlarr_cfg):
+    try:
+        search_limit = int((prowlarr_cfg or {}).get('search_limit') or 100)
+    except (TypeError, ValueError):
+        search_limit = 100
+    return max(1, min(search_limit, 500))
+
+
+def _trim_download_search_results(results, limit=50):
+    ordered_results = sort_download_search_results(results)
+    return [
+        {
+            'title': r.get('title'),
+            'indexer': r.get('indexer'),
+            'size': r.get('size'),
+            'seeders': r.get('seeders'),
+            'leechers': r.get('leechers'),
+            'download_url': r.get('download_url'),
+            'protocol': r.get('protocol'),
+            'age_minutes': r.get('age_minutes'),
+            'age_label': r.get('age_label'),
+            'published_at': r.get('published_at'),
+        }
+        for r in ordered_results[:limit]
+    ]
+
+
+def _get_download_template_visibility():
+    settings = load_settings()
+    downloads = settings.get('downloads', {})
+    return get_download_ui_visibility(downloads)
+
+
 @app.get('/api/requests/search')
 @access_required('admin')
 def request_prowlarr_search_api():
@@ -3015,22 +3521,16 @@ def request_prowlarr_search_api():
         except (TypeError, ValueError):
             timeout_seconds = 15
         timeout_seconds = max(5, min(timeout_seconds, 180))
+        search_limit = _get_prowlarr_search_limit(prowlarr_cfg)
         client = ProwlarrClient(prowlarr_cfg['url'], prowlarr_cfg['api_key'], timeout_seconds=timeout_seconds)
         results = client.search(
             full_query,
             indexer_ids=prowlarr_cfg.get('indexer_ids') or [],
             categories=prowlarr_cfg.get('categories') or [],
+            limit=search_limit,
         )
-        trimmed = [
-            {
-                'title': r.get('title'),
-                'size': r.get('size'),
-                'seeders': r.get('seeders'),
-                'leechers': r.get('leechers'),
-                'download_url': r.get('download_url'),
-            }
-            for r in (results or [])[:50]
-        ]
+        results = filter_download_search_results(results, downloads)
+        trimmed = _trim_download_search_results(results, limit=50)
         return jsonify({'success': True, 'results': trimmed})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'results': []})
@@ -3044,7 +3544,9 @@ def admin_activity_api():
         limit = int(limit)
     except Exception:
         limit = 100
-    limit = max(1, min(limit, 1000))
+    limit = max(1, min(limit, ACTIVITY_API_MAX_LIMIT))
+
+    _prune_stale_active_transfers()
 
     # Snapshot active transfers.
     with _active_transfers_lock:
@@ -3064,6 +3566,38 @@ def admin_activity_api():
 
     clients = sorted(clients, key=lambda item: item.get('last_seen_at', 0), reverse=True)[:250]
     _attach_client_meta(clients)
+
+    geo_cache = {}
+    def _attach_geo(items):
+        for item in (items or []):
+            if not isinstance(item, dict):
+                continue
+            remote = (item.get('remote_addr') or '').strip()
+            if not remote:
+                continue
+            if _is_private_ip(remote):
+                continue
+            if item.get('country') or item.get('region') or item.get('city'):
+                continue
+            if remote in geo_cache:
+                geo = geo_cache[remote]
+            else:
+                try:
+                    geo = lookup_geoip(remote) or {}
+                except Exception:
+                    geo = {}
+                geo_cache[remote] = geo
+            if not geo:
+                continue
+            item['country'] = geo.get('country')
+            item['country_code'] = geo.get('country_code')
+            item['region'] = geo.get('region')
+            item['city'] = geo.get('city')
+            item['latitude'] = geo.get('latitude')
+            item['longitude'] = geo.get('longitude')
+
+    _attach_geo(live)
+    _attach_geo(clients)
 
     # Recent access events.
     history_error = None
@@ -3092,13 +3626,18 @@ def admin_activity_api():
             title_ids.add(item['title_id'])
 
     title_names = {}
-    for tid in title_ids:
-        try:
-            info = titles.get_game_info(tid)
-            if info and info.get('name'):
-                title_names[tid] = info.get('name')
-        except Exception:
-            pass
+    try:
+        with titles.titledb_session() as titledb_loaded:
+            if titledb_loaded:
+                for tid in title_ids:
+                    try:
+                        info = titles.get_game_info(tid)
+                        if info and info.get('name'):
+                            title_names[tid] = info.get('name')
+                    except Exception:
+                        pass
+    except Exception:
+        title_names = {}
 
     for item in live:
         tid = item.get('title_id')
@@ -3126,7 +3665,7 @@ def admin_clients_history_api():
         limit = int(limit)
     except Exception:
         limit = 250
-    limit = max(1, min(limit, 2000))
+    limit = max(1, min(limit, CLIENTS_HISTORY_API_MAX_LIMIT))
     try:
         history = get_access_events(limit=limit, kinds=['client_seen'])
         _attach_client_meta(history)
@@ -3143,7 +3682,7 @@ def admin_clients_history_csv_api():
         limit = int(limit)
     except Exception:
         limit = 2000
-    limit = max(1, min(limit, 10000))
+    limit = max(1, min(limit, CLIENTS_HISTORY_CSV_MAX_LIMIT))
 
     try:
         items = get_access_events(limit=limit, kinds=['client_seen'])
@@ -3215,6 +3754,27 @@ def admin_access_history_clear_api():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+@app.post('/api/admin/blacklist-ip')
+@access_required('admin')
+def admin_blacklist_ip_api():
+    data = request.json or {}
+    ip_value = str(data.get('ip') or '').strip()
+    if not ip_value:
+        return jsonify({'success': False, 'error': 'Missing IP.'}), 400
+    try:
+        settings = load_settings(force_reload=True)
+        security = settings.get('security') or {}
+        existing = security.get('auth_permanent_ip_blacklist') or []
+        entries = [str(item).strip() for item in existing if str(item).strip()]
+        if ip_value not in entries:
+            entries.append(ip_value)
+        set_security_settings({'auth_permanent_ip_blacklist': entries})
+        reload_conf()
+        return jsonify({'success': True, 'blacklist': entries})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.get('/api/settings')
 @access_required('admin')
 def get_settings_api():
@@ -3245,6 +3805,7 @@ def set_titles_settings_api():
     settings = request.json
     region = settings['region']
     language = settings['language']
+    prefer_english_metadata = bool(settings.get('prefer_english_metadata'))
     languages_file = os.path.join(TITLEDB_DIR, 'languages.json')
     if os.path.exists(languages_file):
         with open(languages_file) as f:
@@ -3270,7 +3831,7 @@ def set_titles_settings_api():
         }
         return jsonify(resp)
     
-    set_titles_settings(region, language)
+    set_titles_settings(region, language, prefer_english_metadata=prefer_english_metadata)
     reload_conf()
     titledb.update_titledb(app_settings)
     post_library_change()
@@ -3290,6 +3851,8 @@ def set_shop_settings_api():
         'auth_ip_lockout_window_seconds',
         'auth_ip_lockout_duration_seconds',
         'auth_permanent_ip_blacklist',
+        'auth_blocked_country_codes',
+        'auth_allowed_country_codes',
     }
     shop_data = dict(data)
     security_data = {}
@@ -3298,6 +3861,12 @@ def set_shop_settings_api():
             security_data[key] = shop_data.pop(key)
 
     shop_data.setdefault('host', '')
+    current_settings = load_settings(force_reload=True)
+    merged_shop = dict(current_settings.get('shop', {}))
+    merged_shop.update(shop_data)
+    success, errors = verify_settings('shop', merged_shop)
+    if not success:
+        return jsonify({'success': False, 'errors': errors}), 400
     set_shop_settings(shop_data)
     if security_data:
         set_security_settings(security_data)
@@ -3324,6 +3893,13 @@ def set_download_settings_api():
 @access_required('admin')
 def set_library_settings_api():
     data = request.json or {}
+    current_settings = load_settings(force_reload=True)
+    merged_library = dict(current_settings.get('library', {}))
+    merged_library.update(data)
+    merged_library['_validate_paths'] = False
+    success, errors = verify_settings('library', merged_library)
+    if not success:
+        return jsonify({'success': False, 'errors': errors}), 400
     set_library_settings(data)
     reload_conf()
     _reschedule_library_maintenance(app)
@@ -3572,11 +4148,12 @@ def test_downloads_prowlarr_api():
 @access_required('admin')
 def test_downloads_client_api():
     data = request.json or {}
-    ok, message = test_torrent_client(
+    ok, message = test_download_client(
         client_type=data.get('type', ''),
         url=data.get('url', ''),
         username=data.get('username', ''),
-        password=data.get('password', '')
+        password=data.get('password', ''),
+        api_key=data.get('api_key', '')
     )
     download_path = (data.get('download_path') or '').strip()
     warning = None
@@ -3620,6 +4197,12 @@ def manual_search_update_options():
 def downloads_search():
     query = request.args.get('query', '').strip()
     apply_settings = request.args.get('apply_settings', '').strip() in ('1', 'true', 'yes')
+    extra_blacklist_terms = []
+    for raw_value in request.args.getlist('extra_blacklist'):
+        for term in str(raw_value or '').split(','):
+            normalized = term.strip()
+            if normalized:
+                extra_blacklist_terms.append(normalized)
     if not query:
         return jsonify({'success': False, 'message': 'Missing query.'})
     settings = load_settings()
@@ -3633,6 +4216,7 @@ def downloads_search():
         except (TypeError, ValueError):
             timeout_seconds = 15
         timeout_seconds = max(5, min(timeout_seconds, 180))
+        search_limit = _get_prowlarr_search_limit(prowlarr_cfg)
         full_query = _normalize_download_search_query(query, downloads)
         if apply_settings:
             prefix = _normalize_download_search_query(downloads.get('search_prefix') or '', downloads)
@@ -3646,33 +4230,15 @@ def downloads_search():
             full_query,
             indexer_ids=prowlarr_cfg.get('indexer_ids') or [],
             categories=prowlarr_cfg.get('categories') or [],
+            limit=search_limit,
         )
         if apply_settings:
-            required_terms = [t.lower() for t in (downloads.get('required_terms') or []) if t]
-            blacklist_terms = [t.lower() for t in (downloads.get('blacklist_terms') or []) if t]
-            min_seeders = int(downloads.get('min_seeders') or 0)
-            filtered = []
-            for item in results or []:
-                title = (item.get('title') or '').lower()
-                seeders = item.get('seeders') or 0
-                if min_seeders and seeders < min_seeders:
-                    continue
-                if required_terms and not all(term in title for term in required_terms):
-                    continue
-                if blacklist_terms and any(term in title for term in blacklist_terms):
-                    continue
-                filtered.append(item)
-            results = filtered
-        trimmed = [
-            {
-                'title': r.get('title'),
-                'size': r.get('size'),
-                'seeders': r.get('seeders'),
-                'leechers': r.get('leechers'),
-                'download_url': r.get('download_url')
-            }
-            for r in (results or [])[:50]
-        ]
+            results = filter_download_search_results(
+                results,
+                downloads,
+                blacklist_terms=extra_blacklist_terms,
+            )
+        trimmed = _trim_download_search_results(results, limit=50)
         return jsonify({'success': True, 'results': trimmed})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -3681,19 +4247,30 @@ def downloads_search():
 @access_required('admin')
 def downloads_queue():
     data = request.json or {}
-    download_url = data.get('download_url')
+    download_url = str(data.get('download_url') or '')
     expected_name = data.get('title')
     title_id = data.get('title_id')
+    protocol = data.get('protocol')
     update_only = bool(data.get('update_only', False))
     expected_version = data.get('expected_version')
     if not download_url:
         return jsonify({'success': False, 'message': 'Missing download URL.'})
+    url_digest = hashlib.sha256(download_url.encode('utf-8', errors='ignore')).hexdigest()[:12]
+    logger.debug(
+        'Queue download request: url_len=%s url_sha12=%s is_magnet=%s title_id=%s update_only=%s',
+        len(download_url),
+        url_digest,
+        download_url.lower().startswith('magnet:?'),
+        title_id,
+        update_only,
+    )
     ok, message = queue_download_url(
         download_url,
         expected_name=expected_name,
         update_only=update_only,
         expected_version=expected_version,
-        title_id=title_id
+        title_id=title_id,
+        protocol=protocol,
     )
     return jsonify({'success': ok, 'message': message})
 
@@ -3730,6 +4307,43 @@ def manage_delete_duplicates():
         post_library_change()
     return jsonify(results)
 
+@app.post('/api/manage/delete-library-content')
+@access_required('admin')
+def manage_delete_library_content():
+    data = request.json or {}
+    dry_run = bool(data.get('dry_run', False))
+    verbose = bool(data.get('verbose', False))
+    scope = str(data.get('scope') or '').strip()
+    title_id = data.get('title_id')
+    app_id = data.get('app_id')
+    app_type = data.get('app_type')
+    version = data.get('version')
+
+    results = delete_library_content(
+        scope=scope,
+        dry_run=dry_run,
+        verbose=verbose,
+        title_id=title_id,
+        app_id=app_id,
+        app_type=app_type,
+        version=version,
+    )
+    if not dry_run and results.get('mutated'):
+        _run_post_library_change()
+    status_code = 200 if results.get('success') else 400
+    return jsonify(results), status_code
+
+@app.post('/api/manage/delete-orphaned-addons')
+@access_required('admin')
+def manage_delete_orphaned_addons():
+    data = request.json or {}
+    dry_run = bool(data.get('dry_run', False))
+    verbose = bool(data.get('verbose', False))
+    results = delete_orphaned_addons(dry_run=dry_run, verbose=verbose)
+    if not dry_run and results.get('mutated'):
+        post_library_change()
+    return jsonify(results)
+
 @app.post('/api/manage/check-downloads')
 @access_required('admin')
 def manage_check_downloads():
@@ -3751,11 +4365,20 @@ def downloads_queue_state():
     return jsonify({'success': True, 'state': state})
 
 
+@app.post('/api/downloads/queue/delete')
+@access_required('admin')
+def downloads_queue_delete():
+    data = request.json or {}
+    ok, message = remove_pending_download(data.get('key'))
+    state = get_downloads_state()
+    return jsonify({'success': ok, 'message': message, 'state': state})
+
+
 @app.get('/api/downloads/active')
 @access_required('admin')
 def downloads_active():
-    ok, message, items = get_active_downloads()
-    return jsonify({'success': ok, 'message': message, 'items': items})
+    ok, message, items, summary = get_active_downloads()
+    return jsonify({'success': ok, 'message': message, 'items': items, 'summary': summary})
 
 
 @app.get('/api/manage/downloads-queue')
@@ -4135,7 +4758,7 @@ def upload_file():
         logger.info(f'Validating {file.filename}...')
         valid, validation_errors = validate_keys_file(KEYS_FILE + '.tmp')
         if valid:
-            os.rename(KEYS_FILE + '.tmp', KEYS_FILE)
+            os.replace(KEYS_FILE + '.tmp', KEYS_FILE)
             success = True
             logger.info('Successfully saved valid keys.txt')
             reload_conf()
@@ -4152,12 +4775,51 @@ def upload_file():
     return jsonify(resp)
 
 
+@app.delete('/api/upload/keys')
+@access_required('admin')
+def delete_keys_file():
+    success = False
+    errors = []
+
+    try:
+        if os.path.exists(KEYS_FILE):
+            os.remove(KEYS_FILE)
+            success = True
+            logger.info('Deleted keys.txt')
+            reload_conf()
+            post_library_change()
+        else:
+            errors.append('keys_file_not_found')
+    except Exception as e:
+        logger.error(f'Failed to delete keys file {KEYS_FILE}: {e}')
+        errors.append(str(e))
+
+    return jsonify({
+        'success': success,
+        'errors': errors
+    })
+
+
 @app.post('/api/upload/library')
 @access_required('admin')
 def upload_library_files():
-    files = request.files.getlist('files')
+    try:
+        files = request.files.getlist('files')
+    except RequestEntityTooLarge:
+        raise
+    except Exception as e:
+        logger.exception("Failed to parse upload request")
+        parsed_message = str(e).strip() or e.__class__.__name__
+        return jsonify({
+            'success': False,
+            'message': f'Unable to parse upload request: {parsed_message}',
+            'uploaded': 0,
+            'skipped': 0,
+            'errors': [parsed_message]
+        }), 400
+
     if not files:
-        return jsonify({'success': False, 'message': 'No files uploaded.', 'uploaded': 0, 'skipped': 0, 'errors': []})
+        return jsonify({'success': False, 'message': 'No files uploaded.', 'uploaded': 0, 'skipped': 0, 'errors': []}), 400
 
     library_id = request.form.get('library_id')
     library_path = None
@@ -4168,9 +4830,20 @@ def upload_library_files():
         library_path = library_paths[0] if library_paths else None
 
     if not library_path:
-        return jsonify({'success': False, 'message': 'No library path configured.', 'uploaded': 0, 'skipped': 0, 'errors': []})
+        return jsonify({'success': False, 'message': 'No library path configured.', 'uploaded': 0, 'skipped': 0, 'errors': []}), 400
 
-    os.makedirs(library_path, exist_ok=True)
+    try:
+        os.makedirs(library_path, exist_ok=True)
+    except Exception as e:
+        logger.error("Unable to create/access library path %s: %s", library_path, e)
+        return jsonify({
+            'success': False,
+            'message': f'Cannot access library path: {library_path}',
+            'uploaded': 0,
+            'skipped': len(files),
+            'errors': [str(e)]
+        }), 500
+
     allowed_exts = {'nsp', 'nsz', 'xci', 'xcz'}
     uploaded = 0
     skipped = 0
@@ -4180,6 +4853,7 @@ def upload_library_files():
     for file in files:
         filename = secure_filename(file.filename or '')
         if not filename:
+            errors.append("A file has an invalid or empty filename.")
             skipped += 1
             continue
         
@@ -4195,6 +4869,7 @@ def upload_library_files():
         
         ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
         if ext not in allowed_exts:
+            errors.append(f"{filename}: unsupported extension '{ext or 'none'}'.")
             skipped += 1
             continue
         dest_path = _ensure_unique_path(os.path.join(library_path, filename))
@@ -4203,6 +4878,7 @@ def upload_library_files():
             uploaded += 1
             saved_paths.append(dest_path)
         except Exception as e:
+            logger.error("Failed to save uploaded file %s to %s: %s", filename, library_path, e)
             errors.append(str(e))
 
     if uploaded:
@@ -4210,12 +4886,27 @@ def upload_library_files():
         enqueue_organize_paths(saved_paths)
         post_library_change()
 
+    success = uploaded > 0
+    message = None
+    if success:
+        message = f"Uploaded {uploaded} file(s)."
+        if skipped:
+            message += f" Skipped {skipped}."
+    else:
+        if errors:
+            message = errors[0]
+        elif skipped:
+            message = "All selected files were skipped."
+        else:
+            message = "Upload failed."
+
     return jsonify({
-        'success': uploaded > 0,
+        'success': success,
+        'message': message,
         'uploaded': uploaded,
         'skipped': skipped,
         'errors': errors
-    })
+    }), (200 if success else 400)
 
 
 @app.get('/api/saves/list')
@@ -4486,6 +5177,8 @@ def get_all_titles_api():
     recognized = (request.args.get('recognized') or '').strip().lower()
     app_version_num_expr = func.coalesce(Apps.app_version_num, 0)
     titles_metadata = None
+    search_normalized = ''
+    allowed_types = set()
 
     size_subquery = (
         db.session.query(
@@ -4494,6 +5187,38 @@ def get_all_titles_api():
         )
         .outerjoin(Files, Files.id == app_files.c.file_id)
         .group_by(app_files.c.app_id)
+        .subquery()
+    )
+    base_status_subquery = (
+        db.session.query(
+            Apps.title_id.label('title_fk'),
+            func.max(
+                case(
+                    (and_(Apps.app_type == APP_TYPE_BASE, Apps.owned.is_(True)), 1),
+                    else_=0
+                )
+            ).label('has_owned_base')
+        )
+        .group_by(Apps.title_id)
+        .subquery()
+    )
+    update_status_subquery = (
+        db.session.query(
+            Apps.title_id.label('title_fk'),
+            func.max(
+                case(
+                    (Apps.app_type == APP_TYPE_UPD, app_version_num_expr),
+                    else_=0
+                )
+            ).label('max_update_version'),
+            func.max(
+                case(
+                    (and_(Apps.app_type == APP_TYPE_UPD, Apps.owned.is_(True)), app_version_num_expr),
+                    else_=0
+                )
+            ).label('max_owned_update_version')
+        )
+        .group_by(Apps.title_id)
         .subquery()
     )
     dlc_agg_subquery = (
@@ -4511,6 +5236,51 @@ def get_all_titles_api():
         .group_by(Apps.app_id)
         .subquery()
     )
+    dlc_title_status_subquery = (
+        db.session.query(
+            Apps.title_id.label('title_fk'),
+            Apps.app_id.label('dlc_app_id'),
+            func.max(app_version_num_expr).label('max_version'),
+            func.max(
+                case(
+                    (Apps.owned.is_(True), 1),
+                    else_=0
+                )
+            ).label('has_owned'),
+            func.max(
+                case(
+                    (Apps.owned.is_(True), app_version_num_expr),
+                    else_=0
+                )
+            ).label('max_owned_version')
+        )
+        .filter(Apps.app_type == APP_TYPE_DLC)
+        .group_by(Apps.title_id, Apps.app_id)
+        .subquery()
+    )
+    dlc_completion_subquery = (
+        db.session.query(
+            dlc_title_status_subquery.c.title_fk.label('title_fk'),
+            func.count().label('dlc_count'),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            dlc_title_status_subquery.c.has_owned == 1,
+                            or_(
+                                dlc_title_status_subquery.c.max_version <= 0,
+                                dlc_title_status_subquery.c.max_owned_version >= dlc_title_status_subquery.c.max_version,
+                            ),
+                        ),
+                        1,
+                    ),
+                    else_=0
+                )
+            ).label('complete_dlc_count')
+        )
+        .group_by(dlc_title_status_subquery.c.title_fk)
+        .subquery()
+    )
 
     query = (
         db.session.query(
@@ -4518,20 +5288,25 @@ def get_all_titles_api():
             Apps.title_id.label('title_fk'),
             Titles.id.label('title_db_id'),
             Titles.title_id.label('title_id'),
-            Titles.have_base.label('have_base'),
-            Titles.up_to_date.label('up_to_date'),
-            Titles.complete.label('complete'),
             Apps.app_id.label('app_id'),
             Apps.app_version.label('app_version'),
             Apps.app_type.label('app_type'),
             Apps.owned.label('owned'),
             func.coalesce(size_subquery.c.size, 0).label('size'),
+            func.coalesce(base_status_subquery.c.has_owned_base, 0).label('has_owned_base'),
+            func.coalesce(update_status_subquery.c.max_update_version, 0).label('max_update_version'),
+            func.coalesce(update_status_subquery.c.max_owned_update_version, 0).label('max_owned_update_version'),
             func.coalesce(dlc_agg_subquery.c.max_version, 0).label('dlc_max_version'),
             func.coalesce(dlc_agg_subquery.c.max_owned_version, 0).label('dlc_max_owned_version'),
+            func.coalesce(dlc_completion_subquery.c.dlc_count, 0).label('dlc_count'),
+            func.coalesce(dlc_completion_subquery.c.complete_dlc_count, 0).label('complete_dlc_count'),
         )
         .join(Titles, Apps.title_id == Titles.id)
         .outerjoin(size_subquery, size_subquery.c.app_pk == Apps.id)
+        .outerjoin(base_status_subquery, base_status_subquery.c.title_fk == Titles.id)
+        .outerjoin(update_status_subquery, update_status_subquery.c.title_fk == Titles.id)
         .outerjoin(dlc_agg_subquery, dlc_agg_subquery.c.dlc_app_id == Apps.app_id)
+        .outerjoin(dlc_completion_subquery, dlc_completion_subquery.c.title_fk == Titles.id)
         .filter(
             or_(
                 Apps.app_type == APP_TYPE_BASE,
@@ -4551,24 +5326,56 @@ def get_all_titles_api():
         query = query.filter(Apps.owned.is_(True))
     elif owned == 'missing':
         query = query.filter(Apps.owned.is_(False))
-    if updates == 'up_to_date':
-        query = query.filter(
+    updates_up_to_date_filter = or_(
+        and_(
+            Apps.app_type == APP_TYPE_BASE,
+            base_status_subquery.c.has_owned_base == 1,
             or_(
-                and_(Apps.app_type == APP_TYPE_BASE, Titles.have_base.is_(True), Titles.up_to_date.is_(True)),
-                and_(Apps.app_type == APP_TYPE_DLC, dlc_agg_subquery.c.max_owned_version >= dlc_agg_subquery.c.max_version),
-            )
-        )
-    elif updates == 'outdated':
-        query = query.filter(
+                update_status_subquery.c.max_update_version.is_(None),
+                update_status_subquery.c.max_update_version == 0,
+                update_status_subquery.c.max_owned_update_version >= update_status_subquery.c.max_update_version,
+            ),
+        ),
+        and_(Apps.app_type == APP_TYPE_DLC, dlc_agg_subquery.c.max_owned_version >= dlc_agg_subquery.c.max_version),
+    )
+    updates_outdated_filter = or_(
+        and_(
+            Apps.app_type == APP_TYPE_BASE,
             or_(
-                and_(Apps.app_type == APP_TYPE_BASE, or_(Titles.have_base.is_(False), Titles.up_to_date.is_(False))),
-                and_(Apps.app_type == APP_TYPE_DLC, dlc_agg_subquery.c.max_owned_version < dlc_agg_subquery.c.max_version),
-            )
-        )
-    if completion == 'complete':
-        query = query.filter(and_(Apps.app_type == APP_TYPE_BASE, Titles.complete.is_(True)))
-    elif completion == 'missing_dlc':
-        query = query.filter(and_(Apps.app_type == APP_TYPE_BASE, Titles.complete.is_(False)))
+                func.coalesce(base_status_subquery.c.has_owned_base, 0) == 0,
+                and_(
+                    func.coalesce(update_status_subquery.c.max_update_version, 0) > 0,
+                    func.coalesce(update_status_subquery.c.max_owned_update_version, 0) < func.coalesce(update_status_subquery.c.max_update_version, 0),
+                ),
+            ),
+        ),
+        and_(Apps.app_type == APP_TYPE_DLC, dlc_agg_subquery.c.max_owned_version < dlc_agg_subquery.c.max_version),
+    )
+    completion_complete_filter = and_(
+        Apps.app_type == APP_TYPE_BASE,
+        or_(
+            dlc_completion_subquery.c.dlc_count.is_(None),
+            dlc_completion_subquery.c.dlc_count == 0,
+            dlc_completion_subquery.c.complete_dlc_count >= dlc_completion_subquery.c.dlc_count,
+        ),
+    )
+    completion_missing_dlc_filter = and_(
+        Apps.app_type == APP_TYPE_BASE,
+        func.coalesce(dlc_completion_subquery.c.dlc_count, 0) > 0,
+        func.coalesce(dlc_completion_subquery.c.complete_dlc_count, 0) < func.coalesce(dlc_completion_subquery.c.dlc_count, 0),
+    )
+
+    if updates == 'outdated' and completion == 'missing_dlc':
+        query = query.filter(or_(updates_outdated_filter, completion_missing_dlc_filter))
+    else:
+        if updates == 'up_to_date':
+            query = query.filter(updates_up_to_date_filter)
+        elif updates == 'outdated':
+            query = query.filter(updates_outdated_filter)
+        if completion == 'complete':
+            query = query.filter(completion_complete_filter)
+        elif completion == 'missing_dlc':
+            query = query.filter(completion_missing_dlc_filter)
 
     if search:
         search_normalized = _normalize_library_search_text(search)
@@ -4616,23 +5423,76 @@ def get_all_titles_api():
         else:
             query = query.filter(Titles.id == -1)
 
+    use_name_sort = sort_key in ('title_asc', 'title_desc')
     if sort_key == 'newest':
         query = query.order_by(Titles.id.desc(), Apps.id.desc())
-    elif sort_key == 'title_desc':
-        query = query.order_by(Titles.title_id.desc(), Apps.app_id.desc())
     else:
+        # Title sorts are applied after metadata lookup so ordering follows display names.
         query = query.order_by(Titles.title_id.asc(), Apps.app_id.asc())
 
-    total = query.count()
+    state_token = _get_titledb_aware_state_token()
+    count_cache_key = (
+        state_token,
+        search_normalized,
+        ','.join(sorted(allowed_types)),
+        str(owned or ''),
+        str(updates or ''),
+        str(completion or ''),
+        str(genre or '').lower(),
+        'unrecognized' if recognized == 'unrecognized' else ('recognized' if recognized == 'recognized' else ''),
+    )
+    total = _get_cached_titles_total(count_cache_key)
+    if total is None:
+        total = query.order_by(None).count()
+        _store_titles_total(count_cache_key, total)
     start = (page - 1) * per_page
-    rows = query.offset(start).limit(per_page).all()
 
-    title_fk_ids = {row.title_fk for row in rows if row.title_fk is not None}
+    rows = []
+    rows_for_sort = []
+    base_title_fk_ids = set()
+    title_id_by_fk = {}
+    dlc_app_ids = set()
+    all_lookup_ids = set()
+    info_cache = {}
+    release_dates_by_title = {}
+    if use_name_sort:
+        rows_for_sort = query.order_by(None).all()
+        total = len(rows_for_sort)
+        all_lookup_ids.update([row.title_id for row in rows_for_sort if row.title_id])
+        all_lookup_ids.update([row.app_id for row in rows_for_sort if row.app_type == APP_TYPE_DLC and row.app_id])
+
+        with titles.titledb_session() as titledb_loaded:
+            if titledb_loaded:
+                for lookup_id in all_lookup_ids:
+                    info_cache[lookup_id] = titles.get_game_info(lookup_id) or {}
+
+        def _row_sort_key(row):
+            title_info_local = info_cache.get(row.title_id) or {}
+            app_info_local = title_info_local if row.app_type == APP_TYPE_BASE else (info_cache.get(row.app_id) or title_info_local)
+            display_name = (
+                app_info_local.get('name')
+                or title_info_local.get('name')
+                or row.app_id
+                or row.title_id
+                or ''
+            )
+            return (
+                str(display_name).lower(),
+                str(row.title_id or ''),
+                str(row.app_id or ''),
+            )
+
+        rows_for_sort.sort(key=_row_sort_key, reverse=(sort_key == 'title_desc'))
+        rows = rows_for_sort[start:start + per_page]
+    else:
+        rows = query.offset(start).limit(per_page).all()
+
+    base_title_fk_ids = {row.title_fk for row in rows if row.app_type == APP_TYPE_BASE and row.title_fk is not None}
     title_id_by_fk = {row.title_fk: row.title_id for row in rows if row.title_fk is not None and row.title_id}
     dlc_app_ids = {row.app_id for row in rows if row.app_type == APP_TYPE_DLC and row.app_id}
 
     update_rows = []
-    if title_fk_ids:
+    if base_title_fk_ids:
         update_rows = (
             db.session.query(
                 Apps.title_id.label('title_fk'),
@@ -4641,7 +5501,7 @@ def get_all_titles_api():
                 func.coalesce(size_subquery.c.size, 0).label('size'),
             )
             .outerjoin(size_subquery, size_subquery.c.app_pk == Apps.id)
-            .filter(Apps.app_type == APP_TYPE_UPD, Apps.title_id.in_(title_fk_ids))
+            .filter(Apps.app_type == APP_TYPE_UPD, Apps.title_id.in_(base_title_fk_ids))
             .all()
         )
     update_versions_by_title_fk = {}
@@ -4672,15 +5532,16 @@ def get_all_titles_api():
             'release_date': 'Unknown',
         })
 
-    all_lookup_ids = set()
-    all_lookup_ids.update([tid for tid in title_id_by_fk.values() if tid])
-    all_lookup_ids.update([aid for aid in dlc_app_ids if aid])
-    info_cache = {}
-    release_dates_by_title = {}
+    if not use_name_sort:
+        all_lookup_ids.update([tid for tid in title_id_by_fk.values() if tid])
+        all_lookup_ids.update([aid for aid in dlc_app_ids if aid])
+        with titles.titledb_session() as titledb_loaded:
+            if titledb_loaded:
+                for lookup_id in all_lookup_ids:
+                    info_cache[lookup_id] = titles.get_game_info(lookup_id) or {}
+
     with titles.titledb_session() as titledb_loaded:
         if titledb_loaded:
-            for lookup_id in all_lookup_ids:
-                info_cache[lookup_id] = titles.get_game_info(lookup_id) or {}
             for title_fk, title_id in title_id_by_fk.items():
                 versions = titles.get_all_existing_versions(title_id) or []
                 release_dates_by_title[title_fk] = {
@@ -4720,9 +5581,14 @@ def get_all_titles_api():
             'size': int(row.size or 0),
         }
         if row.app_type == APP_TYPE_BASE:
-            game['has_base'] = bool(row.have_base)
-            game['has_latest_version'] = bool(row.have_base) and bool(row.up_to_date)
-            game['has_all_dlcs'] = bool(row.complete)
+            has_base = bool(row.has_owned_base)
+            max_update_version = int(row.max_update_version or 0)
+            max_owned_update_version = int(row.max_owned_update_version or 0)
+            dlc_count = int(row.dlc_count or 0)
+            complete_dlc_count = int(row.complete_dlc_count or 0)
+            game['has_base'] = has_base
+            game['has_latest_version'] = has_base and (max_update_version <= 0 or max_owned_update_version >= max_update_version)
+            game['has_all_dlcs'] = (dlc_count <= 0) or (complete_dlc_count >= dlc_count)
             game['version'] = list(update_versions_by_title_fk.get(row.title_fk, []))
         elif row.app_type == APP_TYPE_DLC:
             game['has_latest_version'] = int(row.dlc_max_owned_version or 0) >= int(row.dlc_max_version or 0)
@@ -4774,6 +5640,16 @@ def get_title_details_api():
     if not app_id and not title_id:
         return jsonify({'success': False, 'error': 'missing_identifier'}), 400
 
+    size_subquery = (
+        db.session.query(
+            app_files.c.app_id.label('app_pk'),
+            func.coalesce(func.sum(Files.size), 0).label('size'),
+        )
+        .outerjoin(Files, Files.id == app_files.c.file_id)
+        .group_by(app_files.c.app_id)
+        .subquery()
+    )
+
     query = (
         db.session.query(
             Apps.id.label('app_pk'),
@@ -4786,8 +5662,10 @@ def get_title_details_api():
             Apps.app_version.label('app_version'),
             Apps.app_type.label('app_type'),
             Apps.owned.label('owned'),
+            func.coalesce(size_subquery.c.size, 0).label('size'),
         )
         .join(Titles, Apps.title_id == Titles.id)
+        .outerjoin(size_subquery, size_subquery.c.app_pk == Apps.id)
     )
     if app_id and app_type:
         query = query.filter(Apps.app_id == app_id, Apps.app_type == app_type.upper())
@@ -4797,11 +5675,37 @@ def get_title_details_api():
         query = query.filter(Titles.title_id == title_id.upper())
     row = query.order_by(Apps.id.desc()).first()
 
+    app_size_subquery = (
+        db.session.query(
+            app_files.c.app_id.label('app_pk'),
+            func.coalesce(func.sum(Files.size), 0).label('size'),
+        )
+        .outerjoin(Files, Files.id == app_files.c.file_id)
+        .group_by(app_files.c.app_id)
+        .subquery()
+    )
+
     game = None
     if row:
         with titles.titledb_session():
             title_info = titles.get_game_info(row.title_id) or {}
             app_info = title_info if row.app_type == APP_TYPE_BASE else (titles.get_game_info(row.app_id) or title_info)
+            title_apps = (
+                Apps.query
+                .filter(Apps.title_id == row.title_fk)
+                .all()
+            )
+            owned_base_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_BASE and bool(app.owned))
+            owned_update_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_UPD and bool(app.owned))
+            owned_dlc_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_DLC and bool(app.owned))
+            has_base = owned_base_count > 0
+            deletable_versions = _build_deletable_version_map(title_apps)
+            available_update_versions = [_safe_int(app.app_version) for app in title_apps if app.app_type == APP_TYPE_UPD]
+            owned_update_versions = [_safe_int(app.app_version) for app in title_apps if app.app_type == APP_TYPE_UPD and bool(app.owned)]
+            highest_available_update_version = max(available_update_versions, default=0)
+            highest_owned_update_version = max(owned_update_versions, default=0)
+            has_latest_version = highest_available_update_version <= 0 or highest_owned_update_version >= highest_available_update_version
+            dlc_items, has_all_dlcs = _build_title_details_dlc_items(row.title_fk, row.title_id)
             game = {
                 'id': app_info.get('id') or row.app_id,
                 'name': app_info.get('name') or row.app_id,
@@ -4818,18 +5722,43 @@ def get_title_details_api():
                 'app_version': row.app_version,
                 'app_type': row.app_type,
                 'owned': bool(row.owned),
+                'size': int(row.size or 0),
+                'owned_base_count': int(owned_base_count or 0),
+                'owned_update_count': int(owned_update_count or 0),
+                'owned_dlc_count': int(owned_dlc_count or 0),
+                'has_owned_content': bool(owned_base_count or owned_update_count or owned_dlc_count),
+                'has_base': has_base,
+                'has_latest_version': has_base and has_latest_version,
+                'has_all_dlcs': has_all_dlcs,
+                'dlc_list': dlc_items,
+                'missing_dlcs': [
+                    item for item in dlc_items
+                    if not item.get('owned')
+                ],
             }
             if row.app_type == APP_TYPE_BASE:
                 versions = []
                 for upd in (
-                    db.session.query(Apps.app_version, Apps.owned)
+                    db.session.query(
+                        Apps.app_id,
+                        Apps.app_version,
+                        Apps.owned,
+                        func.coalesce(app_size_subquery.c.size, 0).label('size'),
+                    )
+                    .outerjoin(app_size_subquery, app_size_subquery.c.app_pk == Apps.id)
                     .filter(Apps.title_id == row.title_fk, Apps.app_type == APP_TYPE_UPD)
                     .all()
                 ):
                     versions.append({
+                        'app_id': upd.app_id,
+                        'app_type': APP_TYPE_UPD,
                         'version': int(upd.app_version or 0),
                         'owned': bool(upd.owned),
-                        'size': 0,
+                        'deletable': deletable_versions.get(
+                            (str(upd.app_id or '').strip().upper(), APP_TYPE_UPD, str(upd.app_version or '').strip()),
+                            False,
+                        ),
+                        'size': int(upd.size or 0),
                         'release_date': 'Unknown',
                     })
                 release_dates = {
@@ -4840,19 +5769,29 @@ def get_title_details_api():
                     version['release_date'] = release_dates.get(version['version'], 'Unknown')
                 versions.sort(key=lambda item: item['version'])
                 game['version'] = versions
-                game['has_base'] = bool(row.have_base)
-                game['has_latest_version'] = bool(row.have_base) and bool(row.up_to_date)
-                game['has_all_dlcs'] = bool(row.complete)
             elif row.app_type == APP_TYPE_DLC:
                 dlc_versions = []
                 for dlc in (
-                    db.session.query(Apps.app_version, Apps.owned)
+                    db.session.query(
+                        Apps.app_id,
+                        Apps.app_version,
+                        Apps.owned,
+                        func.coalesce(app_size_subquery.c.size, 0).label('size'),
+                    )
+                    .outerjoin(app_size_subquery, app_size_subquery.c.app_pk == Apps.id)
                     .filter(Apps.app_type == APP_TYPE_DLC, Apps.app_id == row.app_id)
                     .all()
                 ):
                     dlc_versions.append({
+                        'app_id': dlc.app_id,
+                        'app_type': APP_TYPE_DLC,
                         'version': int(dlc.app_version or 0),
                         'owned': bool(dlc.owned),
+                        'deletable': deletable_versions.get(
+                            (str(dlc.app_id or '').strip().upper(), APP_TYPE_DLC, str(dlc.app_version or '').strip()),
+                            False,
+                        ),
+                        'size': int(dlc.size or 0),
                         'release_date': 'Unknown',
                     })
                 dlc_versions.sort(key=lambda item: item['version'])
@@ -4865,6 +5804,66 @@ def get_title_details_api():
         'success': bool(game),
         'game': game,
     })
+
+
+def _build_title_details_dlc_items(title_fk, title_id):
+    dlc_rows = (
+        db.session.query(Apps.app_id, Apps.app_version, Apps.owned)
+        .filter(Apps.title_id == title_fk, Apps.app_type == APP_TYPE_DLC)
+        .all()
+    )
+    dlc_state = {}
+    for dlc in dlc_rows:
+        app_id = str(dlc.app_id or '').strip().upper()
+        if not app_id:
+            continue
+        entry = dlc_state.setdefault(app_id, {'max_version': None, 'max_owned': None, 'has_owned': False})
+        version_value = int(dlc.app_version or 0)
+        if entry['max_version'] is None or version_value > entry['max_version']:
+            entry['max_version'] = version_value
+        if dlc.owned:
+            entry['has_owned'] = True
+            if entry['max_owned'] is None or version_value > entry['max_owned']:
+                entry['max_owned'] = version_value
+
+    dlc_app_ids = set(dlc_state.keys())
+    if not dlc_app_ids:
+        dlc_app_ids = {
+            str(app_id or '').strip().upper()
+            for app_id in (titles.get_all_existing_dlc(title_id) or [])
+            if str(app_id or '').strip()
+        }
+
+    dlc_items = []
+    for app_id in sorted(dlc_app_ids):
+        entry = dlc_state.get(app_id) or {'max_version': None, 'max_owned': None, 'has_owned': False}
+        versions_list = titles.get_all_app_existing_versions(app_id) or []
+        max_version = None
+        if versions_list:
+            try:
+                max_version = max(int(v or 0) for v in versions_list)
+            except Exception:
+                max_version = None
+        if max_version is None:
+            try:
+                local_max_version = entry.get('max_version')
+                max_version = int(local_max_version) if local_max_version is not None else None
+            except Exception:
+                max_version = None
+        owned_max_raw = entry.get('max_owned')
+        owned_max = int(owned_max_raw) if owned_max_raw is not None else None
+        dlc_info = titles.get_game_info(app_id) or {}
+        dlc_items.append({
+            'app_id': app_id,
+            'name': dlc_info.get('name') or app_id,
+            'latest_version': max_version,
+            'owned_version': owned_max,
+            'owned': bool(entry.get('has_owned')),
+        })
+
+    dlc_items.sort(key=lambda item: str(item.get('name') or '').lower())
+    has_all_dlcs = all(item.get('owned') for item in dlc_items) if dlc_items else True
+    return dlc_items, has_all_dlcs
 
 
 @app.get('/api/title-info/<title_id>')
@@ -4921,6 +5920,7 @@ def set_manual_title_info_api():
         shop_sections_cache['timestamp'] = 0
         shop_sections_cache['limit'] = None
         shop_sections_cache['state_token'] = None
+        shop_sections_cache['encrypted'] = {}
     with titles_metadata_cache_lock:
         titles_metadata_cache['version'] = _TITLES_METADATA_CACHE_VERSION
         titles_metadata_cache['state_token'] = None
@@ -4933,7 +5933,17 @@ def set_manual_title_info_api():
 @app.get('/api/library/size')
 @access_required('shop')
 def get_library_size_api():
+    state_token = get_library_cache_state_token()
+    with library_size_cache_lock:
+        cached_token = str(library_size_cache.get('state_token') or '')
+        if cached_token and cached_token == str(state_token):
+            return jsonify({'success': True, 'total_bytes': int(library_size_cache.get('total_bytes') or 0)})
+
     total = db.session.query(func.sum(Files.size)).scalar() or 0
+    with library_size_cache_lock:
+        library_size_cache['state_token'] = str(state_token)
+        library_size_cache['total_bytes'] = int(total or 0)
+        library_size_cache['updated_at'] = time.time()
     return jsonify({'success': True, 'total_bytes': int(total)})
 
 @app.get('/api/library/status')
@@ -4990,6 +6000,7 @@ def serve_game(id):
     meta = {
         'id': transfer_id,
         'started_at': start_ts,
+        'last_seen_at': start_ts,
         'user': username,
         'remote_addr': remote_addr,
         'user_agent': user_agent,
@@ -5074,9 +6085,10 @@ def serve_game(id):
                     state['sent'] = int(state.get('sent') or 0) + len(chunk)
                     if state['sent'] % (1024 * 1024) < len(chunk):
                         _transfer_session_progress(session_key, state['sent'])
-                        with _active_transfers_lock:
-                            if transfer_id in _active_transfers:
-                                _active_transfers[transfer_id]['bytes_sent'] = state['sent']
+                    with _active_transfers_lock:
+                        if transfer_id in _active_transfers:
+                            _active_transfers[transfer_id]['bytes_sent'] = state['sent']
+                            _active_transfers[transfer_id]['last_seen_at'] = time.time()
                 except Exception:
                     pass
                 yield chunk
@@ -5103,6 +6115,10 @@ def shop_sections_api():
         limit = 50
 
     is_cyberfoil = _is_cyberfoil_request()
+    # Keep CyberFoil payload uncapped so clients can browse the full owned catalog.
+    # Use a dedicated cache key so capped web payloads and uncapped CyberFoil payloads
+    # do not overwrite each other.
+    cache_limit = -1 if is_cyberfoil else limit
 
     now = time.time()
     state_token = _get_titledb_aware_state_token()
@@ -5115,7 +6131,7 @@ def shop_sections_api():
         cache_hit = (
             cache_enabled
             and shop_sections_cache['payload'] is not None
-            and shop_sections_cache['limit'] == limit
+            and shop_sections_cache['limit'] == cache_limit
             and shop_sections_cache.get('state_token') == state_token
             and cache_valid
         )
@@ -5127,13 +6143,14 @@ def shop_sections_api():
             shop_sections_cache['limit'] = None
             shop_sections_cache['timestamp'] = 0
             shop_sections_cache['state_token'] = None
+            shop_sections_cache['encrypted'] = {}
 
     if payload is None:
         if SHOP_SECTIONS_CACHE_TTL_S is None or SHOP_SECTIONS_CACHE_TTL_S > 0:
             disk_cache = _load_shop_sections_cache_from_disk()
             if (
                 disk_cache
-                and disk_cache.get('limit') == limit
+                and disk_cache.get('limit') == cache_limit
                 and str(disk_cache.get('state_token') or '') == state_token
             ):
                 disk_payload = disk_cache.get('payload')
@@ -5143,12 +6160,12 @@ def shop_sections_api():
                     disk_ok = (now - disk_ts) <= SHOP_SECTIONS_CACHE_TTL_S
                 if disk_payload and disk_ok:
                     payload = disk_payload
-                    _store_shop_sections_cache(payload, limit, disk_ts, state_token, persist_disk=False)
+                    _store_shop_sections_cache(payload, cache_limit, disk_ts, state_token, persist_disk=False)
 
     if payload is None:
-        payload = _build_shop_sections_payload(limit)
+        payload = _build_shop_sections_payload(limit, full_catalog=is_cyberfoil)
         if SHOP_SECTIONS_CACHE_TTL_S is None or SHOP_SECTIONS_CACHE_TTL_S > 0:
-            _store_shop_sections_cache(payload, limit, now, state_token, persist_disk=True)
+            _store_shop_sections_cache(payload, cache_limit, now, state_token, persist_disk=True)
 
     if is_cyberfoil:
         _log_access(
@@ -5159,7 +6176,12 @@ def shop_sections_api():
             duration_ms=int((time.time() - start_ts) * 1000),
         )
 
-    return jsonify(payload)
+    return _respond_with_shop_payload(
+        payload,
+        cache_kind='sections',
+        cache_limit=cache_limit,
+        full_catalog=is_cyberfoil,
+    )
 
 
 @app.get('/api/shop/icon/<title_id>')
@@ -5466,8 +6488,7 @@ def shop_banner_api(title_id):
     return response
 
 
-@debounce(10)
-def post_library_change():
+def _run_post_library_change():
     if _is_conversion_running():
         logger.info("Skipping library rebuild: conversion job is running.")
         return
@@ -5478,6 +6499,7 @@ def post_library_change():
         library_rebuild_status['updated_at'] = time.time()
     with app.app_context():
         try:
+            invalidate_library_cache_state_token()
             titles.load_titledb()
             process_library_identification(app)
             add_missing_apps_to_db()
@@ -5487,11 +6509,13 @@ def post_library_change():
             organize_pending_downloads()
             # Generate the library after organization tasks so cache/UI reflect final file layout.
             generate_library()
+            invalidate_library_cache_state_token()
             with shop_sections_cache_lock:
                 shop_sections_cache['payload'] = None
                 shop_sections_cache['timestamp'] = 0
                 shop_sections_cache['limit'] = None
                 shop_sections_cache['state_token'] = None
+                shop_sections_cache['encrypted'] = {}
             _invalidate_shop_root_cache()
             with titles_metadata_cache_lock:
                 titles_metadata_cache['version'] = _TITLES_METADATA_CACHE_VERSION
@@ -5516,6 +6540,10 @@ def post_library_change():
             with library_rebuild_lock:
                 library_rebuild_status['in_progress'] = False
                 library_rebuild_status['updated_at'] = time.time()
+
+@debounce(10)
+def post_library_change():
+    _run_post_library_change()
 
 @app.post('/api/library/scan')
 @access_required('admin')
@@ -5579,13 +6607,25 @@ if __name__ == '__main__':
             wsgi_connection_limit = _read_int_env('AEROFOIL_WSGI_CONNECTION_LIMIT', _read_int_env('OWNFOIL_WSGI_CONNECTION_LIMIT', 1000, minimum=1, maximum=100000), minimum=1, maximum=100000)
             wsgi_channel_timeout = _read_int_env('AEROFOIL_WSGI_CHANNEL_TIMEOUT_S', _read_int_env('OWNFOIL_WSGI_CHANNEL_TIMEOUT_S', 120, minimum=5, maximum=3600), minimum=5, maximum=3600)
             wsgi_cleanup_interval = _read_int_env('AEROFOIL_WSGI_CLEANUP_INTERVAL_S', _read_int_env('OWNFOIL_WSGI_CLEANUP_INTERVAL_S', 30, minimum=1, maximum=600), minimum=1, maximum=600)
+            wsgi_max_request_body_size = _read_int_env(
+                'AEROFOIL_WSGI_MAX_REQUEST_BODY_SIZE',
+                _read_int_env(
+                    'OWNFOIL_WSGI_MAX_REQUEST_BODY_SIZE',
+                    DEFAULT_WSGI_MAX_REQUEST_BODY_SIZE,
+                    minimum=1024 * 1024,
+                    maximum=1024 * 1024 * 1024 * 1024,
+                ),
+                minimum=1024 * 1024,
+                maximum=1024 * 1024 * 1024 * 1024,
+            )
             logger.info(
-                'Starting Waitress WSGI server on %s:%s (threads=%s, connection_limit=%s, channel_timeout=%ss)',
+                'Starting Waitress WSGI server on %s:%s (threads=%s, connection_limit=%s, channel_timeout=%ss, max_request_body_size=%s bytes)',
                 host,
                 port,
                 wsgi_threads,
                 wsgi_connection_limit,
                 wsgi_channel_timeout,
+                wsgi_max_request_body_size,
             )
             waitress_serve(
                 app,
@@ -5595,6 +6635,7 @@ if __name__ == '__main__':
                 connection_limit=wsgi_connection_limit,
                 channel_timeout=wsgi_channel_timeout,
                 cleanup_interval=wsgi_cleanup_interval,
+                max_request_body_size=wsgi_max_request_body_size,
                 # Keep forwarded headers available for AeroFoil's own trusted-proxy checks.
                 clear_untrusted_proxy_headers=False,
                 ident='AeroFoil'

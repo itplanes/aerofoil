@@ -31,10 +31,10 @@
     <div class="row">
         <div class="col">
             <div class="settings-container container mt-3">
-                <div class="d-flex flex-column flex-lg-row justify-content-between gap-2 align-items-lg-center mb-2">
+                <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
                     <div>
                         <h2 class="pb-2">Manage</h2>
-                        <p class="text-muted mb-0">Library maintenance actions and converter jobs.</p>
+                        <p class="text-muted">Library maintenance actions and converter jobs.</p>
                     </div>
                     <div class="d-flex align-items-center gap-2">
                         <span class="badge text-bg-secondary" id="manageHealthBadge">Checking converter...</span>
@@ -91,7 +91,23 @@
                                                 <label class="form-check-label" for="deleteUpdatesVerbose">Verbose</label>
                                             </div>
                                             <button type="button" id="deleteUpdatesBtn" class="btn btn-danger ms-auto"
-                                                onClick='deleteOlderUpdates()'>Delete older updates</button>
+                                                onClick='promptDeleteOlderUpdates()'>Delete older updates</button>
+                                        </div>
+                                    </div>
+                                    <div class="border rounded p-3">
+                                        <div class="fw-semibold">Delete orphaned updates and DLC</div>
+                                        <div class="text-muted small mb-2">Remove owned updates and DLC files whose parent title has no owned base game.</div>
+                                        <div class="d-flex flex-wrap gap-3 align-items-center">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="deleteOrphanedDryRun" checked>
+                                                <label class="form-check-label" for="deleteOrphanedDryRun">Dry run</label>
+                                            </div>
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="deleteOrphanedVerbose">
+                                                <label class="form-check-label" for="deleteOrphanedVerbose">Verbose</label>
+                                            </div>
+                                            <button type="button" id="deleteOrphanedAddonsBtn" class="btn btn-danger ms-auto"
+                                                onClick='promptDeleteOrphanedAddons()'>Delete orphaned updates and DLC</button>
                                         </div>
                                     </div>
                                     <div class="border rounded p-3">
@@ -107,7 +123,7 @@
                                                 <label class="form-check-label" for="deleteDuplicatesVerbose">Verbose</label>
                                             </div>
                                             <button type="button" id="deleteDuplicatesBtn" class="btn btn-danger ms-auto"
-                                                onClick='deleteDuplicates()'>Delete duplicates</button>
+                                                onClick='promptDeleteDuplicates()'>Delete duplicates</button>
                                         </div>
                                     </div>
                                 </div>
@@ -163,7 +179,16 @@
                                         <div class="form-text">Only NSP/XCI files are listed.</div>
                                     </div>
                                     <div class="border rounded p-3">
-                                        <div class="fw-semibold mb-2">Batch conversion settings</div>
+                                        <div class="d-flex justify-content-between align-items-center mb-2">
+                                            <div class="fw-semibold mb-0">Batch conversion settings</div>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" id="convertBatchSettingsToggleBtn" data-bs-toggle="collapse" data-bs-target="#convertBatchSettingsCollapse" aria-expanded="false" aria-controls="convertBatchSettingsCollapse">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="vertical-align: -0.125em;">
+                                                    <path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/>
+                                                </svg>
+                                                Show
+                                            </button>
+                                        </div>
+                                        <div class="collapse" id="convertBatchSettingsCollapse">
                                         <div class="d-flex flex-wrap gap-3 align-items-center">
                                             <div class="input-group" style="max-width: 220px;">
                                                 <span class="input-group-text">Library</span>
@@ -196,6 +221,7 @@
                                             <button type="button" id="convertNszBtn" class="btn btn-warning ms-auto"
                                                 onClick='convertToNsz()'>Start Library Conversion</button>
                                         </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -208,7 +234,7 @@
                                     <h5 class="card-title mb-0">Task output</h5>
                                     <div class="btn-group">
                                         <button class="btn btn-outline-secondary btn-sm" type="button" onClick="showManageOutput([])">Clear</button>
-                                        <button class="btn btn-outline-danger btn-sm" type="button" id="cancelJobBtn" onClick="cancelActiveJob()" disabled>Cancel</button>
+                                        <button class="btn btn-outline-danger btn-sm" type="button" id="cancelJobBtn" onClick="promptCancelActiveJob()" disabled>Cancel</button>
                                     </div>
                                 </div>
                                 <div class="mb-2">
@@ -251,12 +277,95 @@
     </div>
 </div>
 
+<div class="modal fade" id="manageConfirmModal" tabindex="-1" aria-labelledby="manageConfirmModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="manageConfirmModalLabel">Confirm action</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="manageConfirmModalBody">...</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="manageConfirmModalBtn">Confirm</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
     function showManageAlert(message, type = 'info') {
         const alertBox = $('#manageAlert');
         alertBox.removeClass('d-none alert-info alert-success alert-warning alert-danger');
         alertBox.addClass(`alert-${type}`);
         alertBox.text(message);
+    }
+
+    const manageConfirmModalEl = document.getElementById('manageConfirmModal');
+    const manageConfirmModal = manageConfirmModalEl ? new bootstrap.Modal(manageConfirmModalEl) : null;
+    let manageConfirmAction = null;
+    const manageConfirmModalBtn = $('#manageConfirmModalBtn');
+
+    function showManageConfirmDialog(options) {
+        if (!manageConfirmModal) {
+            return;
+        }
+        manageConfirmAction = options.onConfirm || null;
+        $('#manageConfirmModalLabel').text(options.title || 'Confirm action');
+        $('#manageConfirmModalBody').text(options.message || '');
+        manageConfirmModalBtn
+            .text(options.confirmLabel || 'Confirm')
+            .removeClass('btn-danger btn-warning btn-primary')
+            .addClass(options.confirmClass || 'btn-danger')
+            .prop('disabled', false);
+        manageConfirmModal.show();
+    }
+
+    if (manageConfirmModalEl) {
+        manageConfirmModalEl.addEventListener('hidden.bs.modal', function () {
+            manageConfirmAction = null;
+            manageConfirmModalBtn
+                .text('Confirm')
+                .removeClass('btn-warning btn-primary')
+                .addClass('btn-danger')
+                .prop('disabled', false);
+        });
+    }
+
+    manageConfirmModalBtn.on('click', function () {
+        if (!manageConfirmAction) {
+            return;
+        }
+        $(this).prop('disabled', true);
+        const action = manageConfirmAction;
+        manageConfirmModal.hide();
+        action();
+    });
+
+    function promptDeleteOlderUpdates() {
+        const dryRun = $('#deleteUpdatesDryRun').is(':checked');
+        showManageConfirmDialog({
+            title: dryRun ? 'Preview older update cleanup' : 'Delete older updates',
+            message: dryRun
+                ? 'Run a dry run for older update cleanup? No files will be deleted.'
+                : 'Delete older update files and keep only the latest owned update per title?',
+            confirmLabel: dryRun ? 'Run dry run' : 'Delete updates',
+            confirmClass: 'btn-danger',
+            onConfirm: deleteOlderUpdates
+        });
+    }
+
+    function promptDeleteDuplicates() {
+        const dryRun = $('#deleteDuplicatesDryRun').is(':checked');
+        showManageConfirmDialog({
+            title: dryRun ? 'Preview duplicate cleanup' : 'Delete duplicates',
+            message: dryRun
+                ? 'Run a dry run for duplicate cleanup? No files will be deleted.'
+                : 'Delete duplicate owned files and keep one file per app ID and version?',
+            confirmLabel: dryRun ? 'Run dry run' : 'Delete duplicates',
+            confirmClass: 'btn-danger',
+            onConfirm: deleteDuplicates
+        });
     }
 
     function organizeLibrary() {
@@ -323,7 +432,7 @@
             contentType: "application/json",
             success: function (result) {
                 if (result['success']) {
-                    showManageAlert(`Delete updates complete. Deleted ${result['deleted']} files. Skipped ${result['skipped']}.`, 'success');
+                    showManageAlert(`Delete updates complete. Deleted ${result['deleted']} files.`, 'success');
                     showManageOutput(result['details']);
                 } else {
                     showManageAlert(`Delete updates failed: ${result['errors'].join('; ')}`, 'danger');
@@ -349,7 +458,7 @@
             contentType: "application/json",
             success: function (result) {
                 if (result['success']) {
-                    showManageAlert(`Delete duplicates complete. Deleted ${result['deleted']} files. Skipped ${result['skipped']}.`, 'success');
+                    showManageAlert(`Delete duplicates complete. Deleted ${result['deleted']} files.`, 'success');
                     showManageOutput(result['details']);
                 } else {
                     showManageAlert(`Delete duplicates failed: ${result['errors'].join('; ')}`, 'danger');
@@ -358,6 +467,45 @@
             },
             complete: function () {
                 $('#deleteDuplicatesBtn').prop('disabled', false);
+            }
+        });
+    }
+
+    function promptDeleteOrphanedAddons() {
+        const dryRun = $('#deleteOrphanedDryRun').is(':checked');
+        showManageConfirmDialog({
+            title: dryRun ? 'Preview orphaned add-on cleanup' : 'Delete orphaned updates and DLC',
+            message: dryRun
+                ? 'Run a dry run for orphaned updates and DLC? No files will be deleted.'
+                : 'Delete all owned updates and DLC entries whose parent title has no owned base game?',
+            confirmLabel: dryRun ? 'Run dry run' : 'Delete orphaned add-ons',
+            confirmClass: 'btn-danger',
+            onConfirm: deleteOrphanedAddons
+        });
+    }
+
+    function deleteOrphanedAddons() {
+        $('#deleteOrphanedAddonsBtn').prop('disabled', true);
+        data = {
+            dry_run: $('#deleteOrphanedDryRun').is(':checked'),
+            verbose: $('#deleteOrphanedVerbose').is(':checked')
+        }
+        $.ajax({
+            url: "/api/manage/delete-orphaned-addons",
+            type: 'POST',
+            data: JSON.stringify(data),
+            contentType: "application/json",
+            success: function (result) {
+                if (result['success']) {
+                    showManageAlert(`Delete orphaned add-ons complete. Deleted ${result['deleted']} files.`, 'success');
+                    showManageOutput(result['details']);
+                } else {
+                    showManageAlert(`Delete orphaned add-ons failed: ${result['errors'].join('; ')}`, 'danger');
+                    showManageOutput(result['details']);
+                }
+            },
+            complete: function () {
+                $('#deleteOrphanedAddonsBtn').prop('disabled', false);
             }
         });
     }
@@ -632,6 +780,19 @@
         if (message) {
             // Status is surfaced via the alert; avoid dumping raw converter output.
         }
+    }
+
+    function promptCancelActiveJob() {
+        if (!activeJobId) {
+            return;
+        }
+        showManageConfirmDialog({
+            title: 'Cancel conversion job',
+            message: 'Cancel the active conversion job? Any in-progress work may stop before the current file completes.',
+            confirmLabel: 'Cancel job',
+            confirmClass: 'btn-danger',
+            onConfirm: cancelActiveJob
+        });
     }
 
     function cancelActiveJob() {
@@ -977,6 +1138,12 @@
                 $('#manageOutput').text('');
             }
         });
+        $('#convertBatchSettingsCollapse').on('show.bs.collapse', function () {
+            $('#convertBatchSettingsToggleBtn').html('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="vertical-align: -0.125em;"><path fill-rule="evenodd" d="M1.646 11.354a.5.5 0 0 0 .708 0L8 5.707l5.646 5.647a.5.5 0 0 0 .708-.708l-6-6a.5.5 0 0 0-.708 0l-6 6a.5.5 0 0 0 0 .708z"/></svg> Hide');
+        });
+        $('#convertBatchSettingsCollapse').on('hide.bs.collapse', function () {
+            $('#convertBatchSettingsToggleBtn').html('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="vertical-align: -0.125em;"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg> Show');
+        });
         $.getJSON("/api/manage/jobs?limit=1", function (result) {
             if (!result['success']) {
                 return;
@@ -1002,4 +1169,3 @@
 </script>
 
 {% endblock %}
-

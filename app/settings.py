@@ -4,6 +4,7 @@ import os
 import time
 import hashlib
 import threading
+from Crypto.PublicKey import RSA
 
 import logging
 
@@ -14,12 +15,52 @@ logger = logging.getLogger('main')
 _settings_cache = None
 _settings_cache_time = 0
 _settings_cache_ttl = 5  # Cache for 5 seconds
+_settings_cache_signature = None
+_settings_cache_lock = threading.Lock()
 
 # Cache key validation results by absolute path + file checksum to avoid
 # re-running nsz Keys.load() on every settings refresh.
 _keys_validation_cache = {}
 _keys_validation_lock = threading.Lock()
 _keys_validation_cache_max = 16
+_DOCKER_CONVERSION_STAGING_DIR = '/app/conversion-tmp'
+
+
+def _get_config_signature():
+    try:
+        stat = os.stat(CONFIG_FILE)
+        return (int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        return None
+
+
+def _get_keys_signature():
+    try:
+        stat = os.stat(KEYS_FILE)
+        return (int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        return None
+
+
+def _get_settings_signature():
+    return (_get_config_signature(), _get_keys_signature())
+
+
+def _is_settings_cache_valid(current_signature, current_time):
+    if _settings_cache is None:
+        return False
+    if _settings_cache_signature is not None and current_signature == _settings_cache_signature:
+        return True
+    if current_signature is None and (current_time - _settings_cache_time) < _settings_cache_ttl:
+        return True
+    return False
+
+
+def _invalidate_settings_cache():
+    global _settings_cache, _settings_cache_time, _settings_cache_signature
+    _settings_cache = None
+    _settings_cache_time = 0
+    _settings_cache_signature = None
 
 
 def _hash_file_sha256(path):
@@ -99,6 +140,25 @@ def _normalize_titles_manual_overrides(raw_overrides):
         }
     return out
 
+def _normalize_titles_settings(raw_titles):
+    defaults = DEFAULT_SETTINGS.get('titles', {}) or {}
+    merged = defaults.copy()
+    if isinstance(raw_titles, dict):
+        merged.update(raw_titles)
+
+    region = str(merged.get('region') or defaults.get('region') or 'US').strip()
+    language = str(merged.get('language') or defaults.get('language') or 'en').strip()
+    merged['region'] = region or 'US'
+    merged['language'] = language or 'en'
+    merged['prefer_english_metadata'] = _coerce_bool(
+        merged.get('prefer_english_metadata'),
+        default=defaults.get('prefer_english_metadata', False),
+    )
+    merged['manual_overrides'] = _normalize_titles_manual_overrides(
+        merged.get('manual_overrides')
+    )
+    return merged
+
 def _normalize_library_naming_templates(raw_templates):
     default_templates = (
         DEFAULT_SETTINGS.get('library', {})
@@ -151,6 +211,12 @@ def _normalize_library_naming_templates(raw_templates):
         'templates': normalized,
     }
 
+def _normalize_conversion_staging_dir(raw_path):
+    text = str(raw_path or '').strip()
+    if not text:
+        return ''
+    return os.path.abspath(os.path.expanduser(text))
+
 
 def _normalize_download_search_char_replacements(raw_rules):
     default_rules = (
@@ -177,6 +243,93 @@ def _normalize_download_search_char_replacements(raw_rules):
         seen_from.add(from_text)
     return normalized
 
+
+def _normalize_download_client_config(raw_client, defaults, allow_credentials=True, allow_download_path=True, allow_api_key=False, shared_category=None):
+    merged = (defaults or {}).copy()
+    if isinstance(raw_client, dict):
+        merged.update(raw_client)
+
+    raw_category = ''
+    if isinstance(raw_client, dict):
+        raw_category = str(raw_client.get('category') or '').strip()
+    resolved_category = str(
+        raw_category
+        or shared_category
+        or defaults.get('category')
+        or 'aerofoil'
+    ).strip()
+    normalized = {
+        'type': str(merged.get('type') or defaults.get('type') or '').strip().lower(),
+        'url': str(merged.get('url') or '').strip(),
+        'category': resolved_category,
+    }
+    if allow_credentials:
+        normalized['username'] = str(merged.get('username') or '').strip()
+        normalized['password'] = str(merged.get('password') or '')
+    if allow_download_path:
+        normalized['download_path'] = str(merged.get('download_path') or '').strip()
+    if allow_api_key:
+        normalized['api_key'] = str(merged.get('api_key') or '').strip()
+    return normalized
+
+
+def _normalize_download_settings(downloads):
+    defaults = DEFAULT_SETTINGS.get('downloads', {}) or {}
+    raw_downloads = downloads if isinstance(downloads, dict) else {}
+    merged = defaults.copy()
+    merged.update(raw_downloads)
+    legacy_min_seeders = raw_downloads.get('min_seeders')
+    shared_category = str(
+        merged.get('category')
+        or (merged.get('torrent_client') or {}).get('category')
+        or (merged.get('usenet_client') or {}).get('category')
+        or defaults.get('category')
+        or 'aerofoil'
+    ).strip()
+    merged['category'] = shared_category
+
+    prowlarr_defaults = defaults.get('prowlarr', {})
+    merged_prowlarr = prowlarr_defaults.copy()
+    merged_prowlarr.update(merged.get('prowlarr') or {})
+    merged['prowlarr'] = merged_prowlarr
+    merged['search_char_replacements'] = _normalize_download_search_char_replacements(
+        merged.get('search_char_replacements')
+    )
+    raw_torrent_client = dict(raw_downloads.get('torrent_client') or {})
+    if 'min_seeders' not in raw_torrent_client and legacy_min_seeders is not None:
+        raw_torrent_client['min_seeders'] = legacy_min_seeders
+    merged['torrent_client'] = _normalize_download_client_config(
+        raw_torrent_client,
+        defaults.get('torrent_client', {}),
+        allow_credentials=True,
+        allow_download_path=True,
+        allow_api_key=False,
+        shared_category=shared_category,
+    )
+    merged['torrent_client']['min_seeders'] = _coerce_int(
+        raw_torrent_client.get('min_seeders'),
+        default=(defaults.get('torrent_client', {}) or {}).get('min_seeders', 2),
+        minimum=0,
+        maximum=100000,
+    )
+    raw_usenet_client = dict(raw_downloads.get('usenet_client') or {})
+    merged['usenet_client'] = _normalize_download_client_config(
+        raw_usenet_client,
+        defaults.get('usenet_client', {}),
+        allow_credentials=False,
+        allow_download_path=False,
+        allow_api_key=True,
+        shared_category=shared_category,
+    )
+    merged['usenet_client']['min_age_minutes'] = _coerce_int(
+        raw_usenet_client.get('min_age_minutes'),
+        default=(defaults.get('usenet_client', {}) or {}).get('min_age_minutes', 0),
+        minimum=0,
+        maximum=10000000,
+    )
+    merged.pop('min_seeders', None)
+    return merged
+
 def _read_env_bool(key):
     raw = os.environ.get(key)
     if raw is None:
@@ -188,6 +341,7 @@ def _read_env_bool(key):
         return False
     return None
 
+
 def _read_env_csv(key):
     raw = os.environ.get(key)
     if raw is None:
@@ -196,6 +350,23 @@ def _read_env_csv(key):
     if not raw:
         return []
     return [item.strip() for item in raw.split(',') if item.strip()]
+
+def _resolve_env_conversion_staging_dir():
+    enabled = _read_env_bool('AEROFOIL_CONVERSION_STAGING_ENABLED')
+    if enabled is None:
+        enabled = _read_env_bool('OWNFOIL_CONVERSION_STAGING_ENABLED')
+
+    env_dir = os.environ.get('AEROFOIL_CONVERSION_STAGING_DIR')
+    if env_dir is None:
+        env_dir = os.environ.get('OWNFOIL_CONVERSION_STAGING_DIR')
+
+    if enabled is False:
+        return ''
+    if env_dir is not None:
+        return env_dir
+    if enabled is True:
+        return _DOCKER_CONVERSION_STAGING_DIR
+    return None
 
 def _coerce_bool(value, default=False):
     if isinstance(value, bool):
@@ -249,6 +420,34 @@ def _normalize_ip_entries(raw):
             out.append(candidate)
     return out
 
+def _normalize_country_codes(raw):
+    if raw is None:
+        return []
+
+    entries = []
+    if isinstance(raw, str):
+        entries = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        entries = list(raw)
+
+    out = []
+    seen = set()
+    for item in entries:
+        text = str(item or '').strip()
+        if not text:
+            continue
+        for segment in text.replace('\r', '\n').replace(',', '\n').split('\n'):
+            candidate = str(segment or '').strip().upper()
+            if not candidate:
+                continue
+            if len(candidate) != 2 or not candidate.isalpha():
+                continue
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            out.append(candidate)
+    return out
+
 def _normalize_security_settings(raw_security):
     defaults = DEFAULT_SETTINGS.get('security', {}) or {}
     merged = defaults.copy()
@@ -285,10 +484,74 @@ def _normalize_security_settings(raw_security):
     merged['auth_permanent_ip_blacklist'] = _normalize_ip_entries(
         merged.get('auth_permanent_ip_blacklist')
     )
+    merged['auth_blocked_country_codes'] = _normalize_country_codes(
+        merged.get('auth_blocked_country_codes')
+    )
+    merged['auth_allowed_country_codes'] = _normalize_country_codes(
+        merged.get('auth_allowed_country_codes')
+    )
     return merged
 
+
+def _normalize_shop_settings(raw_shop):
+    defaults = DEFAULT_SETTINGS.get('shop', {}) or {}
+    merged = defaults.copy()
+    if isinstance(raw_shop, dict):
+        merged.update(raw_shop)
+
+    merged['motd'] = str(merged.get('motd') or defaults.get('motd') or '').strip()
+    merged['public'] = _coerce_bool(
+        merged.get('public'),
+        default=defaults.get('public', False),
+    )
+    merged['external_tinfoil_only'] = _coerce_bool(
+        merged.get('external_tinfoil_only'),
+        default=defaults.get('external_tinfoil_only', False),
+    )
+    merged['encrypt'] = _coerce_bool(
+        merged.get('encrypt'),
+        default=defaults.get('encrypt', True),
+    )
+    merged['fast_transfer_mode'] = _coerce_bool(
+        merged.get('fast_transfer_mode'),
+        default=defaults.get('fast_transfer_mode', False),
+    )
+    merged['tinfoil_only_mode'] = _coerce_bool(
+        merged.get('tinfoil_only_mode'),
+        default=defaults.get('tinfoil_only_mode', False),
+    )
+    merged['public_key'] = str(merged.get('public_key') or '').strip()
+    merged['clientCertPub'] = str(merged.get('clientCertPub') or defaults.get('clientCertPub') or '').strip()
+    merged['clientCertKey'] = str(merged.get('clientCertKey') or defaults.get('clientCertKey') or '').strip()
+    merged['host'] = str(merged.get('host') or '').strip()
+    merged['hauth'] = str(merged.get('hauth') or '').strip()
+
+    if merged['tinfoil_only_mode']:
+        merged['encrypt'] = True
+
+    return merged
+
+
+def _validate_shop_public_key(public_key_pem):
+    key_text = str(public_key_pem or '').strip()
+    if not key_text:
+        return True, None
+    try:
+        key = RSA.import_key(key_text)
+    except Exception as exc:
+        return False, f'Invalid public key: {exc}'
+    if getattr(key, 'has_private', lambda: False)():
+        return False, 'Invalid public key: expected a public key, not a private key.'
+    return True, None
+
 def load_keys(key_file=KEYS_FILE):
-    valid, _ = validate_keys_file(key_file)
+    try:
+        file_path = os.path.abspath(str(key_file or KEYS_FILE))
+    except Exception:
+        file_path = os.path.abspath(str(KEYS_FILE))
+    if not os.path.isfile(file_path):
+        return False
+    valid, _ = validate_keys_file(file_path)
     return valid
 
 
@@ -303,7 +566,7 @@ def validate_keys_file(key_file=KEYS_FILE):
     file_path = os.path.abspath(str(key_file or KEYS_FILE))
     if not os.path.isfile(file_path):
         logger.debug(f'Keys file {key_file} does not exist.')
-        return valid, ['keys_file_missing']
+        return valid, []
 
     try:
         checksum = _hash_file_sha256(file_path)
@@ -360,131 +623,92 @@ def validate_keys_file(key_file=KEYS_FILE):
             return False, [str(e)]
 
 def load_settings(force_reload=False):
-    global _settings_cache, _settings_cache_time
-    
+    global _settings_cache, _settings_cache_time, _settings_cache_signature
+
     current_time = time.time()
-    
-    # Return cached settings if still valid and not forcing reload
-    if not force_reload and _settings_cache is not None and (current_time - _settings_cache_time) < _settings_cache_ttl:
+    current_signature = _get_settings_signature()
+
+    if not force_reload and _is_settings_cache_valid(current_signature, current_time):
         return _settings_cache
-    
-    if os.path.exists(CONFIG_FILE):
-        logger.debug('Reading configuration file.')
-        with open(CONFIG_FILE, 'r') as yaml_file:
-            settings = yaml.safe_load(yaml_file)
 
-        if 'security' not in settings:
-            settings['security'] = DEFAULT_SETTINGS.get('security', {})
-        else:
-            defaults = DEFAULT_SETTINGS.get('security', {})
-            merged = defaults.copy()
-            merged.update(settings.get('security', {}))
-            settings['security'] = merged
+    with _settings_cache_lock:
+        current_time = time.time()
+        current_signature = _get_settings_signature()
+        if not force_reload and _is_settings_cache_valid(current_signature, current_time):
+            return _settings_cache
 
-        if 'shop' not in settings:
-            settings['shop'] = DEFAULT_SETTINGS.get('shop', {})
+        config_exists = os.path.exists(CONFIG_FILE)
+        if config_exists:
+            logger.debug('Reading configuration file.')
+            with open(CONFIG_FILE, 'r') as yaml_file:
+                settings = yaml.safe_load(yaml_file) or {}
+            if not isinstance(settings, dict):
+                settings = {}
         else:
-            defaults = DEFAULT_SETTINGS.get('shop', {})
+            settings = {}
+
+        def _merge_section(name):
+            defaults = DEFAULT_SETTINGS.get(name, {})
             merged = defaults.copy()
-            merged.update(settings.get('shop', {}))
-            settings['shop'] = merged
-        settings['shop']['fast_transfer_mode'] = _coerce_bool(
-            settings['shop'].get('fast_transfer_mode'),
-            default=False,
-        )
+            raw_section = settings.get(name, {})
+            if isinstance(raw_section, dict):
+                merged.update(raw_section)
+            settings[name] = merged
+
+        _merge_section('security')
+        _merge_section('shop')
+        _merge_section('titles')
+        _merge_section('library')
 
         env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
         if env_trust is None:
             env_trust = _read_env_bool('OWNFOIL_TRUST_PROXY_HEADERS')
         if env_trust is not None:
             settings['security']['trust_proxy_headers'] = env_trust
+
         env_proxies = _read_env_csv('AEROFOIL_TRUSTED_PROXIES')
         if env_proxies is None:
             env_proxies = _read_env_csv('OWNFOIL_TRUSTED_PROXIES')
         if env_proxies is not None:
             settings['security']['trusted_proxies'] = env_proxies
+
+        env_country_block = _read_env_csv('AEROFOIL_AUTH_BLOCKED_COUNTRY_CODES')
+        if env_country_block is None:
+            env_country_block = _read_env_csv('OWNFOIL_AUTH_BLOCKED_COUNTRY_CODES')
+        if env_country_block is not None:
+            settings['security']['auth_blocked_country_codes'] = env_country_block
+
+        env_country_allow = _read_env_csv('AEROFOIL_AUTH_ALLOWED_COUNTRY_CODES')
+        if env_country_allow is None:
+            env_country_allow = _read_env_csv('OWNFOIL_AUTH_ALLOWED_COUNTRY_CODES')
+        if env_country_allow is not None:
+            settings['security']['auth_allowed_country_codes'] = env_country_allow
+
+        env_conversion_staging_dir = _resolve_env_conversion_staging_dir()
+        if env_conversion_staging_dir is not None:
+            settings['library']['conversion_staging_dir'] = env_conversion_staging_dir
+
         settings['security'] = _normalize_security_settings(settings.get('security'))
-
-        if 'downloads' not in settings:
-            settings['downloads'] = DEFAULT_SETTINGS.get('downloads', {})
-        else:
-            defaults = DEFAULT_SETTINGS.get('downloads', {})
-            merged = defaults.copy()
-            merged.update(settings.get('downloads', {}))
-            settings['downloads'] = merged
-        # Keep nested downloads settings backward-compatible when new keys are added.
-        prowlarr_defaults = (DEFAULT_SETTINGS.get('downloads', {}) or {}).get('prowlarr', {})
-        merged_prowlarr = prowlarr_defaults.copy()
-        merged_prowlarr.update((settings['downloads'].get('prowlarr') or {}))
-        settings['downloads']['prowlarr'] = merged_prowlarr
-        settings['downloads']['search_char_replacements'] = _normalize_download_search_char_replacements(
-            settings['downloads'].get('search_char_replacements')
+        settings['downloads'] = _normalize_download_settings(settings.get('downloads'))
+        settings['titles'] = _normalize_titles_settings(settings.get('titles'))
+        settings['shop'] = _normalize_shop_settings(settings.get('shop'))
+        settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
+            settings['library'].get('conversion_staging_dir')
         )
-
-        if 'titles' not in settings:
-            settings['titles'] = DEFAULT_SETTINGS.get('titles', {})
-        else:
-            defaults = DEFAULT_SETTINGS.get('titles', {})
-            merged = defaults.copy()
-            merged.update(settings.get('titles', {}))
-            settings['titles'] = merged
-        settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
-            settings['titles'].get('manual_overrides')
-        )
-
-        if 'library' not in settings:
-            settings['library'] = DEFAULT_SETTINGS.get('library', {})
-        else:
-            defaults = DEFAULT_SETTINGS.get('library', {})
-            merged = defaults.copy()
-            merged.update(settings.get('library', {}))
-            settings['library'] = merged
         settings['library']['naming_templates'] = _normalize_library_naming_templates(
             settings['library'].get('naming_templates')
         )
 
-        valid_keys = load_keys()
-        settings['titles']['valid_keys'] = valid_keys
+        if not config_exists:
+            with open(CONFIG_FILE, 'w') as yaml_file:
+                yaml.dump(settings, yaml_file)
 
-    else:
-        settings = DEFAULT_SETTINGS
-        env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
-        if env_trust is None:
-            env_trust = _read_env_bool('OWNFOIL_TRUST_PROXY_HEADERS')
-        if env_trust is not None:
-            settings['security']['trust_proxy_headers'] = env_trust
-        env_proxies = _read_env_csv('AEROFOIL_TRUSTED_PROXIES')
-        if env_proxies is None:
-            env_proxies = _read_env_csv('OWNFOIL_TRUSTED_PROXIES')
-        if env_proxies is not None:
-            settings['security']['trusted_proxies'] = env_proxies
-        settings['security'] = _normalize_security_settings(settings.get('security'))
-        with open(CONFIG_FILE, 'w') as yaml_file:
-            yaml.dump(settings, yaml_file)
-    settings['security'] = _normalize_security_settings(settings.get('security'))
-    settings.setdefault('library', {})
-    settings['library']['naming_templates'] = _normalize_library_naming_templates(
-        settings['library'].get('naming_templates')
-    )
-    settings.setdefault('titles', {})
-    settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
-        settings['titles'].get('manual_overrides')
-    )
-    settings.setdefault('downloads', {})
-    settings['downloads']['search_char_replacements'] = _normalize_download_search_char_replacements(
-        settings['downloads'].get('search_char_replacements')
-    )
-    settings.setdefault('shop', {})
-    settings['shop']['fast_transfer_mode'] = _coerce_bool(
-        settings['shop'].get('fast_transfer_mode'),
-        default=False,
-    )
-    
-    # Update cache
-    _settings_cache = settings
-    _settings_cache_time = current_time
-    
-    return settings
+        settings['titles']['valid_keys'] = load_keys()
+
+        _settings_cache = settings
+        _settings_cache_time = current_time
+        _settings_cache_signature = _get_settings_signature()
+        return settings
 
 
 def set_security_settings(data):
@@ -494,23 +718,70 @@ def set_security_settings(data):
     settings['security'] = _normalize_security_settings(settings.get('security'))
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
-    # Invalidate cache
-    global _settings_cache
-    _settings_cache = None
+    _invalidate_settings_cache()
+
 
 def verify_settings(section, data):
     success = True
     errors = []
     if section == 'library':
-        # Check that paths exist
-        for dir in data['paths']:
-            if not os.path.exists(dir):
+        library_paths = list(data.get('paths') or [])
+        validate_paths = bool(data.get('_validate_paths', True))
+        if validate_paths:
+            for dir in library_paths:
+                if not os.path.exists(dir):
+                    success = False
+                    errors.append({
+                        'path': 'library/path',
+                        'error': f"Path {dir} does not exists."
+                    })
+                    break
+        raw_conversion_staging_dir = str(data.get('conversion_staging_dir') or '').strip()
+        conversion_staging_dir = _normalize_conversion_staging_dir(raw_conversion_staging_dir)
+        if conversion_staging_dir:
+            if not os.path.isabs(raw_conversion_staging_dir):
                 success = False
                 errors.append({
-                    'path': 'library/path',
-                    'error': f"Path {dir} does not exists."
+                    'path': 'library/conversion_staging_dir',
+                    'error': 'Conversion staging directory must be an absolute path.'
                 })
-                break
+            elif not os.path.isdir(conversion_staging_dir):
+                success = False
+                errors.append({
+                    'path': 'library/conversion_staging_dir',
+                    'error': f"Path {conversion_staging_dir} does not exist."
+                })
+            elif not os.access(conversion_staging_dir, os.W_OK):
+                success = False
+                errors.append({
+                    'path': 'library/conversion_staging_dir',
+                    'error': f"Path {conversion_staging_dir} is not writable."
+                })
+            else:
+                for library_path in library_paths:
+                    abs_library_path = os.path.abspath(os.path.expanduser(str(library_path or '').strip()))
+                    if not abs_library_path:
+                        continue
+                    try:
+                        common = os.path.commonpath([conversion_staging_dir, abs_library_path])
+                    except ValueError:
+                        continue
+                    if common == abs_library_path:
+                        success = False
+                        errors.append({
+                            'path': 'library/conversion_staging_dir',
+                            'error': 'Conversion staging directory must not be inside a configured library path.'
+                        })
+                        break
+    elif section == 'shop':
+        normalized = _normalize_shop_settings(data)
+        public_key_ok, public_key_error = _validate_shop_public_key(normalized.get('public_key'))
+        if not public_key_ok:
+            success = False
+            errors.append({
+                'path': 'shop/public_key',
+                'error': public_key_error,
+            })
     return success, errors
 
 def add_library_path_to_settings(path):
@@ -540,9 +811,7 @@ def add_library_path_to_settings(path):
     settings['library']['paths'] = library_paths
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
-    # Invalidate cache
-    global _settings_cache
-    _settings_cache = None
+    _invalidate_settings_cache()
     return success, errors
 
 def delete_library_path_from_settings(path):
@@ -556,9 +825,7 @@ def delete_library_path_from_settings(path):
             settings['library']['paths'] = library_paths
             with open(CONFIG_FILE, 'w') as yaml_file:
                 yaml.dump(settings, yaml_file)
-            # Invalidate cache
-            global _settings_cache
-            _settings_cache = None
+            _invalidate_settings_cache()
         else:
             success = False
             errors.append({
@@ -567,15 +834,18 @@ def delete_library_path_from_settings(path):
                 })
     return success, errors
 
-def set_titles_settings(region, language):
+def set_titles_settings(region, language, prefer_english_metadata=False):
     settings = load_settings(force_reload=True)
-    settings['titles']['region'] = region
-    settings['titles']['language'] = language
+    settings.setdefault('titles', {})
+    settings['titles'].update({
+        'region': region,
+        'language': language,
+        'prefer_english_metadata': prefer_english_metadata,
+    })
+    settings['titles'] = _normalize_titles_settings(settings.get('titles'))
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
-    # Invalidate cache
-    global _settings_cache
-    _settings_cache = None
+    _invalidate_settings_cache()
 
 def set_manual_title_override(title_id, data):
     title_id = str(title_id or '').strip().upper()
@@ -604,44 +874,48 @@ def set_manual_title_override(title_id, data):
     settings['titles']['manual_overrides'] = overrides
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
-    global _settings_cache
-    _settings_cache = None
+    _invalidate_settings_cache()
     return True
 
 def set_shop_settings(data):
     settings = load_settings(force_reload=True)
+    settings.setdefault('shop', {})
     shop_host = data['host']
     if '://' in shop_host:
         data['host'] = shop_host.split('://')[-1]
-    data['fast_transfer_mode'] = _coerce_bool(data.get('fast_transfer_mode'), default=False)
     settings['shop'].update(data)
+    settings['shop'] = _normalize_shop_settings(settings.get('shop'))
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
-    # Invalidate cache
-    global _settings_cache
-    _settings_cache = None
+    _invalidate_settings_cache()
 
 def set_download_settings(data):
     settings = load_settings(force_reload=True)
     settings.setdefault('downloads', {})
-    if data and 'search_char_replacements' in data:
-        data['search_char_replacements'] = _normalize_download_search_char_replacements(
-            data.get('search_char_replacements')
+    incoming = dict(data or {})
+    if 'search_char_replacements' in incoming:
+        incoming['search_char_replacements'] = _normalize_download_search_char_replacements(
+            incoming.get('search_char_replacements')
         )
-    settings['downloads'].update(data)
+    current = settings.get('downloads', {})
+    merged = dict(current)
+    merged.update(incoming)
+    settings['downloads'] = _normalize_download_settings(merged)
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
-    # Invalidate cache
-    global _settings_cache
-    _settings_cache = None
+    _invalidate_settings_cache()
+
 
 def set_library_settings(data):
     settings = load_settings(force_reload=True)
     settings.setdefault('library', {})
     if data and 'naming_templates' in data:
         data['naming_templates'] = _normalize_library_naming_templates(data.get('naming_templates'))
+    if data and 'conversion_staging_dir' in data:
+        data['conversion_staging_dir'] = _normalize_conversion_staging_dir(
+            data.get('conversion_staging_dir')
+        )
     settings['library'].update(data)
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
-    global _settings_cache
-    _settings_cache = None
+    _invalidate_settings_cache()

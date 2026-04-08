@@ -109,16 +109,16 @@ def list_active(client_type, url, username=None, password=None, category=None, d
     return []
 
 
-def remove_torrent(client_type, url, torrent_hash, username=None, password=None, timeout_seconds=15):
+def remove_torrent(client_type, url, torrent_hash, username=None, password=None, timeout_seconds=15, delete_files=False):
     if not torrent_hash:
         return False, "Torrent hash is required."
     client_type = (client_type or "").lower()
     if client_type == "qbittorrent":
-        return _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds)
+        return _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     if client_type == "transmission":
-        return _remove_transmission(url, username, password, torrent_hash, timeout_seconds)
+        return _remove_transmission(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     if client_type == "deluge":
-        return _remove_deluge(url, password, torrent_hash, timeout_seconds)
+        return _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     return False, "Unsupported client type."
 
 
@@ -331,18 +331,38 @@ def _add_qbittorrent(url, username, password, download_url, category, download_p
     resp = session.post(f"{base}/api/v2/torrents/add", data=data, timeout=timeout_seconds)
     if resp.status_code != 200:
         return False, f"qBittorrent returned {resp.status_code}.", None
+    add_response_text = str(resp.text or "").strip()
+    if add_response_text and add_response_text.lower() not in ("ok", "ok."):
+        return False, f"qBittorrent rejected torrent add: {add_response_text}", None
     torrent_hash = _extract_magnet_hash(download_url)
+    if torrent_hash:
+        resolved_hash = None
+        for _ in range(10):
+            normalized = _normalize_hash(session, base, torrent_hash, timeout_seconds)
+            if normalized:
+                resolved_hash = normalized
+                break
+            time.sleep(1)
+        torrent_hash = resolved_hash
     if update_only and infohash_v1 and temp_tag:
         torrent_hash = _find_qbittorrent_hash_by_tag_and_infohash(
             session, base, temp_tag, infohash_v1, timeout_seconds
         )
-    if update_only and infohash_v1:
+    if infohash_v1 and (update_only or not torrent_hash):
         torrent_hash = _find_qbittorrent_hash_by_infohash(session, base, infohash_v1, category, added_at, timeout_seconds)
         if torrent_hash:
             logger.info("Matched torrent hash %s for infohash_v1 %s", torrent_hash, infohash_v1)
-    if update_only and not torrent_hash:
-        for _ in range(5):
-            torrent_hash = _find_recent_qbittorrent_hash(session, base, expected_name, category, timeout_seconds, added_at)
+    if not torrent_hash:
+        for _ in range(10):
+            torrent_hash = _find_recent_qbittorrent_hash(
+                session,
+                base,
+                expected_name,
+                category,
+                timeout_seconds,
+                added_after=added_at,
+                require_match=True,
+            )
             if torrent_hash:
                 break
             time.sleep(1)
@@ -371,6 +391,8 @@ def _add_qbittorrent(url, username, password, download_url, category, download_p
             _remove_qbittorrent_tag(session, base, torrent_hash, temp_tag, timeout_seconds)
     elif update_only:
         return False, "Unable to resolve torrent hash for file selection.", None
+    elif not torrent_hash:
+        return False, "qBittorrent did not report the added torrent.", None
     elif exclude_russian and torrent_hash:
         _exclude_qbittorrent_russian(session, base, torrent_hash, timeout_seconds)
     return True, "qBittorrent accepted torrent.", torrent_hash
@@ -843,7 +865,7 @@ def _is_deluge_managed_label(label):
     return False
 
 
-def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds):
+def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
     base = url.rstrip("/")
     session = requests.Session()
     session.headers.update({"User-Agent": "AeroFoil/Downloads"})
@@ -857,7 +879,7 @@ def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds):
             return False, "qBittorrent login failed."
     resp = session.post(
         f"{base}/api/v2/torrents/delete",
-        data={"hashes": torrent_hash, "deleteFiles": "false"},
+        data={"hashes": torrent_hash, "deleteFiles": "true" if delete_files else "false"},
         timeout=timeout_seconds,
     )
     if resp.status_code != 200:
@@ -865,18 +887,18 @@ def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds):
     return True, "qBittorrent removed torrent."
 
 
-def _remove_qbittorrent_with_session(session, base, torrent_hash, timeout_seconds):
+def _remove_qbittorrent_with_session(session, base, torrent_hash, timeout_seconds, delete_files=False):
     if not torrent_hash:
         return False
     resp = session.post(
         f"{base}/api/v2/torrents/delete",
-        data={"hashes": torrent_hash, "deleteFiles": "false"},
+        data={"hashes": torrent_hash, "deleteFiles": "true" if delete_files else "false"},
         timeout=timeout_seconds,
     )
     return resp.status_code == 200
 
 
-def _remove_transmission(url, username, password, torrent_hash, timeout_seconds):
+def _remove_transmission(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
     base = url.rstrip("/")
     session = requests.Session()
     session.headers.update({"User-Agent": "AeroFoil/Downloads"})
@@ -885,7 +907,7 @@ def _remove_transmission(url, username, password, torrent_hash, timeout_seconds)
 
     payload = {
         "method": "torrent-remove",
-        "arguments": {"ids": [torrent_hash], "delete-local-data": False},
+        "arguments": {"ids": [torrent_hash], "delete-local-data": bool(delete_files)},
     }
     resp = session.post(f"{base}/transmission/rpc", json=payload, timeout=timeout_seconds)
     if resp.status_code == 409:
@@ -898,7 +920,7 @@ def _remove_transmission(url, username, password, torrent_hash, timeout_seconds)
     return True, "Transmission removed torrent."
 
 
-def _remove_deluge(url, password, torrent_hash, timeout_seconds):
+def _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=False):
     ok, logged_in = _deluge_login(url, password, timeout_seconds=timeout_seconds)
     if not ok or not logged_in:
         return False, "Deluge login failed."
@@ -907,7 +929,7 @@ def _remove_deluge(url, password, torrent_hash, timeout_seconds):
         url,
         password,
         "core.remove_torrent",
-        [torrent_hash, False],
+        [torrent_hash, bool(delete_files)],
         timeout_seconds=timeout_seconds
     )
     if not ok:
@@ -1135,8 +1157,9 @@ def _find_qbittorrent_hash_by_infohash(session, base, infohash_v1, category, add
     matches = []
     candidates = []
     for item in items:
+        tags = _parse_qbittorrent_tags(item.get("tags"))
         if category:
-            if item.get("category") != category and category not in (item.get("tags") or "").split(","):
+            if item.get("category") != category and category not in tags:
                 continue
         added_on = int(item.get("added_on") or 0)
         if added_after and added_on < added_after:
@@ -1231,7 +1254,7 @@ def _find_qbittorrent_hash_by_tag_and_infohash(session, base, tag, infohash_v1, 
     return None
 
 
-def _find_recent_qbittorrent_hash(session, base, expected_name, category, timeout_seconds, added_after=None):
+def _find_recent_qbittorrent_hash(session, base, expected_name, category, timeout_seconds, added_after=None, require_match=False):
     expected = (expected_name or "").lower()
     expected_terms = [term for term in re.split(r"\s+", expected) if len(term) > 2]
     candidates = []
@@ -1267,6 +1290,10 @@ def _find_recent_qbittorrent_hash(session, base, expected_name, category, timeou
     if matches:
         matches.sort(key=lambda item: item.get("added_on", 0), reverse=True)
         return matches[0].get("hash")
+    if require_match:
+        if not expected and len(candidates) == 1:
+            return candidates[0].get("hash")
+        return None
     if candidates:
         candidates.sort(key=lambda item: item.get("added_on", 0), reverse=True)
         return candidates[0].get("hash")

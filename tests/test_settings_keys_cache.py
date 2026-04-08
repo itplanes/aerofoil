@@ -1,12 +1,13 @@
 import hashlib
 import os
 import sys
-import tempfile
 import types
 import unittest
 from unittest.mock import patch
 
 from app import settings
+
+TEST_TMP_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".tmp", "keys-cache-tests")
 
 
 class FakeKeys:
@@ -70,19 +71,17 @@ class SettingsKeysCacheTests(unittest.TestCase):
         self.patcher.stop()
 
     def _write_temp_keys_file(self, data):
-        fd, path = tempfile.mkstemp(prefix='aerofoil_keys_', suffix='.txt')
-        os.close(fd)
+        os.makedirs(TEST_TMP_ROOT, exist_ok=True)
+        filename = f"{self.id().rsplit('.', 1)[-1]}.txt"
+        path = os.path.join(TEST_TMP_ROOT, filename)
         with open(path, 'wb') as handle:
             handle.write(data)
         return path
 
     def test_validate_keys_file_uses_cache_for_same_checksum(self):
         path = self._write_temp_keys_file(b'master_key_14 = 00112233445566778899AABBCCDDEEFF\n')
-        try:
-            valid_a, errors_a = settings.validate_keys_file(path)
-            valid_b, errors_b = settings.validate_keys_file(path)
-        finally:
-            os.remove(path)
+        valid_a, errors_a = settings.validate_keys_file(path)
+        valid_b, errors_b = settings.validate_keys_file(path)
 
         self.assertTrue(valid_a)
         self.assertTrue(valid_b)
@@ -92,13 +91,10 @@ class SettingsKeysCacheTests(unittest.TestCase):
 
     def test_validate_keys_file_reloads_when_checksum_changes(self):
         path = self._write_temp_keys_file(b'master_key_14 = 00112233445566778899AABBCCDDEEFF\n')
-        try:
-            settings.validate_keys_file(path)
-            with open(path, 'wb') as handle:
-                handle.write(b'master_key_14 = FFEEDDCCBBAA99887766554433221100\n')
-            settings.validate_keys_file(path)
-        finally:
-            os.remove(path)
+        settings.validate_keys_file(path)
+        with open(path, 'wb') as handle:
+            handle.write(b'master_key_14 = FFEEDDCCBBAA99887766554433221100\n')
+        settings.validate_keys_file(path)
 
         self.assertEqual(FakeKeys.load_calls, 2)
 

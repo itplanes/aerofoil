@@ -16,6 +16,32 @@ logger = logging.getLogger('main')
 def get_region_titles_file(app_settings):
     return f"titles.{app_settings['titles']['region']}.{app_settings['titles']['language']}.json"
 
+def get_preferred_english_titles_files(app_settings, available_files=None):
+    titles_settings = (app_settings or {}).get('titles') or {}
+    if not bool(titles_settings.get('prefer_english_metadata')):
+        return []
+
+    candidates = sorted(
+        file_name
+        for file_name in (available_files or [])
+        if re.fullmatch(r"titles\.[A-Z]{2}\.en\.json", str(file_name or ''))
+    )
+    if not candidates:
+        return []
+
+    current_region = str(titles_settings.get('region') or '').strip().upper()
+    preferred = []
+    for file_name in (
+        f"titles.{current_region}.en.json" if current_region else '',
+        "titles.US.en.json",
+    ):
+        if file_name and file_name in candidates and file_name not in preferred:
+            preferred.append(file_name)
+    for file_name in candidates:
+        if file_name not in preferred:
+            preferred.append(file_name)
+    return preferred
+
 def download_from_remote_zip(rzf, path, store_path):
     with rzf.open(path) as fpin:
         with open(store_path, mode='wb') as fpout:
@@ -64,6 +90,21 @@ def _validate_downloaded_titledb_file(path, filename):
     return os.path.isfile(path)
 
 
+def _remove_temp_file(path, retries=3, delay_s=0.1):
+    for attempt in range(max(1, int(retries or 1))):
+        try:
+            if not os.path.isfile(path):
+                return
+            os.remove(path)
+            return
+        except PermissionError:
+            if attempt >= max(1, int(retries or 1)) - 1:
+                return
+            time.sleep(delay_s)
+        except Exception:
+            return
+
+
 def download_titledb_files(rzf, files):
     for file in files:
         store_path = os.path.join(TITLEDB_DIR, file)
@@ -76,11 +117,7 @@ def download_titledb_files(rzf, files):
                 raise ValueError(f'Downloaded TitleDB file is invalid: {file}')
             os.replace(temp_path, store_path)
         finally:
-            try:
-                if os.path.isfile(temp_path):
-                    os.remove(temp_path)
-            except Exception:
-                pass
+            _remove_temp_file(temp_path)
 
 
 def _get_with_retry(url, max_retries=5, backoff_factor=2, headers=None, method="GET", allow_redirects=False):
@@ -233,13 +270,15 @@ def update_titledb_files(app_settings):
             raise ValueError("No response received for TitleDB artefacts")
         direct_url = r.headers.get('Location') if (300 <= r.status_code < 400) else str(TITLEDB_ARTEFACTS_URL)
         rzf = unzip_http.RemoteZipFile(direct_url)
+        remote_files = {info.filename for info in rzf.infolist()}
     except Exception as e:
         logger.error(f'Failed to fetch TitleDB artefacts: {e}')
         raise
     
+    english_titles_files = get_preferred_english_titles_files(app_settings, available_files=remote_files)
     update_available, latest_remote_commit = is_titledb_update_available(rzf)
     if update_available:
-        files_to_update = TITLEDB_DEFAULT_FILES + [region_titles_file]
+        files_to_update = TITLEDB_DEFAULT_FILES + [region_titles_file] + english_titles_files
         need_descriptions = True
         old_region_titles_files = [f for f in os.listdir(TITLEDB_DIR) if re.match(r"titles\.[A-Z]{2}\.[a-z]{2}\.json", f) and f not in files_to_update]
         files_to_update += old_region_titles_files
@@ -253,6 +292,25 @@ def update_titledb_files(app_settings):
         )
         files_to_update.extend(missing_core_files)
         need_descriptions = True
+
+    missing_english_files = [file for file in english_titles_files if file not in current_files]
+    if missing_english_files:
+        logger.info(
+            "Missing preferred English TitleDB file(s): %s. They will be downloaded.",
+            ", ".join(missing_english_files)
+        )
+        files_to_update.extend(missing_english_files)
+
+    missing_optional_files = [
+        file for file in TITLEDB_OPTIONAL_FILES
+        if file in remote_files and file not in current_files
+    ]
+    if missing_optional_files:
+        logger.info(
+            "Missing optional TitleDB file(s): %s. They will be downloaded.",
+            ", ".join(missing_optional_files)
+        )
+        files_to_update.extend(missing_optional_files)
 
     # Ensure we have a local description index (used for game info descriptions).
     desc_url, desc_filename = _get_descriptions_url(app_settings)

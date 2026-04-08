@@ -25,11 +25,23 @@ logger = logging.getLogger('main')
 db = SQLAlchemy()
 migrate = Migrate()
 
+
+def utc_now():
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
 # Alembic functions
 def get_alembic_cfg():
     cfg = Config(ALEMBIC_CONF)
     cfg.set_main_option("script_location", ALEMBIC_DIR)
     return cfg
+
+def get_alembic_heads():
+    alembic_cfg = get_alembic_cfg()
+    script = ScriptDirectory.from_config(alembic_cfg)
+    try:
+        return script.get_heads()
+    except Exception:
+        return []
 
 def get_current_db_version():
     engine = create_engine(AEROFOIL_DB)
@@ -49,14 +61,27 @@ def create_db_backup():
 def is_migration_needed():
     alembic_cfg = get_alembic_cfg()
     script = ScriptDirectory.from_config(alembic_cfg)
-    latest_revision = script.get_current_head()
     current_revision = get_current_db_version()
-    if current_revision != latest_revision:
-        logger.info(f'Database migration needed, from {current_revision} to {latest_revision}')
-        return True
-    else:
-        logger.info(f"Database version is up to date ({current_revision})")
+    heads = []
+    latest_revision = None
+    try:
+        latest_revision = script.get_current_head()
+        heads = [latest_revision] if latest_revision else []
+    except Exception:
+        heads = get_alembic_heads()
+        if len(heads) > 1:
+            logger.warning("Multiple alembic heads detected: %s", ", ".join(heads))
+
+    if not heads:
+        logger.info("Database version is up to date (%s)", current_revision)
         return False
+
+    if current_revision not in heads:
+        logger.info("Database migration needed, from %s to %s", current_revision, ", ".join(heads))
+        return True
+
+    logger.info("Database version is up to date (%s)", current_revision)
+    return False
 
 def to_dict(db_results):
     return {c.name: getattr(db_results, c.name) for c in db_results.__table__.columns}
@@ -154,6 +179,11 @@ class User(UserMixin, db.Model):
     backup_access = db.Column(db.Boolean)
     frozen = db.Column(db.Boolean, default=False)
     frozen_message = db.Column(db.String)
+    client_uid = db.Column(db.String)
+    last_login_at = db.Column(db.DateTime)
+    last_login_ip = db.Column(db.String)
+    last_login_country = db.Column(db.String)
+    last_login_country_code = db.Column(db.String)
 
     @property
     def is_admin(self):
@@ -179,7 +209,7 @@ class User(UserMixin, db.Model):
 
 class TitleRequests(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
     status = db.Column(db.String, nullable=False, default='open')
     title_id = db.Column(db.String, nullable=False)
     title_name = db.Column(db.String)
@@ -192,7 +222,7 @@ class TitleRequestViews(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     request_id = db.Column(db.Integer, db.ForeignKey('title_requests.id', ondelete='CASCADE'), nullable=False)
-    viewed_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    viewed_at = db.Column(db.DateTime, nullable=False, default=utc_now)
 
     __table_args__ = (db.UniqueConstraint('user_id', 'request_id', name='uq_title_request_views_user_request'),)
 
@@ -202,11 +232,17 @@ class TitleRequestViews(db.Model):
 
 class AccessEvents(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    at = db.Column(db.DateTime, nullable=False, default=utc_now)
     kind = db.Column(db.String, nullable=False)
     user = db.Column(db.String)
     remote_addr = db.Column(db.String)
     user_agent = db.Column(db.String)
+    country = db.Column(db.String)
+    country_code = db.Column(db.String)
+    region = db.Column(db.String)
+    city = db.Column(db.String)
+    latitude = db.Column(db.Float)
+    longitude = db.Column(db.Float)
     title_id = db.Column(db.String)
     file_id = db.Column(db.Integer)
     filename = db.Column(db.String)
@@ -227,6 +263,32 @@ _DOWNLOAD_COUNT_BUFFER = {}
 _DOWNLOAD_COUNT_BUFFER_MAX = 128
 _DOWNLOAD_COUNT_BUFFER_FLUSH_S = 1.5
 _DOWNLOAD_COUNT_LAST_FLUSH_TS = 0.0
+
+
+def _read_int_env(env_key, default_value, minimum=None, maximum=None):
+    raw = os.environ.get(env_key)
+    if raw is None:
+        return int(default_value)
+    raw = str(raw).strip()
+    if not raw:
+        return int(default_value)
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(default_value)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return int(value)
+
+
+ACCESS_EVENTS_QUERY_MAX_LIMIT = _read_int_env(
+    'AEROFOIL_ACCESS_EVENTS_QUERY_MAX',
+    _read_int_env('OWNFOIL_ACCESS_EVENTS_QUERY_MAX', 10000, minimum=100, maximum=200000),
+    minimum=100,
+    maximum=200000,
+)
 
 
 def flush_access_events_buffer(force=False):
@@ -321,6 +383,12 @@ def add_access_event(
     user=None,
     remote_addr=None,
     user_agent=None,
+    country=None,
+    country_code=None,
+    region=None,
+    city=None,
+    latitude=None,
+    longitude=None,
     title_id=None,
     file_id=None,
     filename=None,
@@ -331,11 +399,17 @@ def add_access_event(
 ):
     try:
         payload = {
-            'at': datetime.datetime.utcnow(),
+            'at': utc_now(),
             'kind': kind,
             'user': user,
             'remote_addr': remote_addr,
             'user_agent': user_agent,
+            'country': country,
+            'country_code': country_code,
+            'region': region,
+            'city': city,
+            'latitude': latitude,
+            'longitude': longitude,
             'title_id': title_id,
             'file_id': file_id,
             'filename': filename,
@@ -352,13 +426,13 @@ def add_access_event(
         return False
 
 
-def get_access_events(limit=100, kind=None, kinds=None):
+def get_access_events(limit=100, kind=None, kinds=None, user=None, users=None):
     flush_access_events_buffer(force=True)
     try:
         limit = int(limit)
     except Exception:
         limit = 100
-    limit = max(1, min(limit, 1000))
+    limit = max(1, min(limit, ACCESS_EVENTS_QUERY_MAX_LIMIT))
 
     q = AccessEvents.query
     if kinds:
@@ -371,6 +445,21 @@ def get_access_events(limit=100, kind=None, kinds=None):
     elif kind:
         q = q.filter_by(kind=str(kind))
 
+    user_values = []
+    if users:
+        try:
+            user_values.extend([str(value).strip() for value in users if value is not None and str(value).strip()])
+        except Exception:
+            user_values = []
+    elif user is not None and str(user).strip():
+        user_values.append(str(user).strip())
+
+    if user_values:
+        if len(user_values) == 1:
+            q = q.filter(AccessEvents.user == user_values[0])
+        else:
+            q = q.filter(AccessEvents.user.in_(user_values))
+
     events = q.order_by(AccessEvents.at.desc()).limit(limit).all()
     out = []
     for e in events:
@@ -381,6 +470,12 @@ def get_access_events(limit=100, kind=None, kinds=None):
             'user': e.user,
             'remote_addr': e.remote_addr,
             'user_agent': e.user_agent,
+            'country': e.country,
+            'country_code': e.country_code,
+            'region': e.region,
+            'city': e.city,
+            'latitude': e.latitude,
+            'longitude': e.longitude,
             'title_id': e.title_id,
             'file_id': e.file_id,
             'filename': e.filename,
@@ -488,6 +583,83 @@ def ensure_performance_schema():
         logger.warning("Failed to apply performance schema optimizations: %s", e)
 
 
+def ensure_access_events_geo_schema():
+    try:
+        if db.engine.dialect.name != 'sqlite':
+            return
+    except Exception:
+        return
+
+    try:
+        result = db.session.execute(text("PRAGMA table_info(access_events)"))
+        existing = {row[1] for row in result if row and len(row) > 1}
+    except Exception as e:
+        logger.warning("Failed to read access_events schema: %s", e)
+        return
+
+    columns = [
+        ('country', 'TEXT'),
+        ('country_code', 'TEXT'),
+        ('region', 'TEXT'),
+        ('city', 'TEXT'),
+        ('latitude', 'REAL'),
+        ('longitude', 'REAL'),
+    ]
+
+    try:
+        added = False
+        for name, col_type in columns:
+            if name in existing:
+                continue
+            ddl = f"ALTER TABLE access_events ADD COLUMN {name} {col_type}"
+            db.session.execute(text(ddl))
+            added = True
+        if added:
+            db.session.commit()
+            logger.info("Added missing geo columns to access_events.")
+    except Exception as e:
+        db.session.rollback()
+        logger.warning("Failed to apply access_events geo schema: %s", e)
+
+
+def ensure_user_client_schema():
+    try:
+        if db.engine.dialect.name != 'sqlite':
+            return
+    except Exception:
+        return
+
+    try:
+        result = db.session.execute(text("PRAGMA table_info(user)"))
+        existing = {row[1] for row in result if row and len(row) > 1}
+    except Exception as e:
+        logger.warning("Failed to read user schema: %s", e)
+        return
+
+    columns = [
+        ('client_uid', 'TEXT'),
+        ('last_login_at', 'DATETIME'),
+        ('last_login_ip', 'TEXT'),
+        ('last_login_country', 'TEXT'),
+        ('last_login_country_code', 'TEXT'),
+    ]
+
+    try:
+        added = False
+        for name, col_type in columns:
+            if name in existing:
+                continue
+            ddl = f"ALTER TABLE user ADD COLUMN {name} {col_type}"
+            db.session.execute(text(ddl))
+            added = True
+        if added:
+            db.session.commit()
+            logger.info("Added missing client columns to user.")
+    except Exception as e:
+        db.session.rollback()
+        logger.warning("Failed to apply user client schema: %s", e)
+
+
 def init_db(app):
     with app.app_context():
         # Ensure foreign keys are enforced when the SQLite connection is opened
@@ -507,9 +679,11 @@ def init_db(app):
                 logger.info('Checking database migration...')
                 if is_migration_needed():
                     create_db_backup()
-                    upgrade()
+                    command.upgrade(get_alembic_cfg(), "head")
                     logger.info("Database migration applied successfully.")
             ensure_performance_schema()
+            ensure_access_events_geo_schema()
+            ensure_user_client_schema()
 
 def file_exists_in_db(filepath):
     return Files.query.filter_by(filepath=filepath).first() is not None

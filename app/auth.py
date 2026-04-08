@@ -5,6 +5,7 @@ from functools import wraps
 from app.db import *
 from flask_login import LoginManager
 from app.settings import load_settings, set_security_settings
+from app.utils import lookup_geoip
 import hashlib
 
 import logging
@@ -22,6 +23,15 @@ _auth_ip_lockouts = {}
 _auth_failure_burst_lock = threading.Lock()
 _auth_failure_burst = {}
 _AUTH_FAILURE_BURST_WINDOW_S = 1.5
+_admin_exists_cache_lock = threading.Lock()
+_admin_exists_cache = {'value': None, 'ts': 0.0}
+_ADMIN_EXISTS_CACHE_TTL_S = 30
+
+
+def _invalidate_admin_exists_cache():
+    with _admin_exists_cache_lock:
+        _admin_exists_cache['value'] = None
+        _admin_exists_cache['ts'] = 0.0
 
 
 def _auth_dedupe_allow(dedupe_key: str, window_s: int = 15) -> bool:
@@ -309,6 +319,12 @@ def _log_login_event(kind: str, username: str = None, ok: bool = None, status_co
             settings = {}
         remote = _effective_client_ip(settings)
         ua = request.headers.get('User-Agent')
+        geo = {}
+        try:
+            if remote and not _is_private_ip(remote):
+                geo = lookup_geoip(remote) or {}
+        except Exception:
+            geo = {}
 
         # Dedupe noisy auth failures (scanners, repeated retries).
         dedupe_key = f"{kind}|{(username or '').strip()}|{remote}|{ua}"[:512]
@@ -320,6 +336,12 @@ def _log_login_event(kind: str, username: str = None, ok: bool = None, status_co
             user=(username or '').strip() or None,
             remote_addr=remote,
             user_agent=ua,
+            country=geo.get('country'),
+            country_code=geo.get('country_code'),
+            region=geo.get('region'),
+            city=geo.get('city'),
+            latitude=geo.get('latitude'),
+            longitude=geo.get('longitude'),
             ok=bool(ok) if ok is not None else None,
             status_code=(
                 int(status_code)
@@ -345,7 +367,18 @@ def admin_account_created():
         pass
 
     try:
-        return User.query.filter_by(admin_access=True).count() > 0
+        now = time.time()
+        with _admin_exists_cache_lock:
+            cached_value = _admin_exists_cache.get('value')
+            cached_ts = float(_admin_exists_cache.get('ts') or 0.0)
+            if cached_value is not None and (now - cached_ts) < float(_ADMIN_EXISTS_CACHE_TTL_S):
+                return bool(cached_value)
+
+        exists = User.query.filter_by(admin_access=True).count() > 0
+        with _admin_exists_cache_lock:
+            _admin_exists_cache['value'] = bool(exists)
+            _admin_exists_cache['ts'] = time.time()
+        return bool(exists)
     except Exception:
         return False
 
@@ -685,6 +718,7 @@ def create_or_update_user(username, password, admin_access=False, shop_access=Fa
         new_user = User(user=username, password=generate_password_hash(password, method='scrypt'), admin_access=admin_access, shop_access=shop_access, backup_access=backup_access)
         db.session.add(new_user)
     db.session.commit()
+    _invalidate_admin_exists_cache()
 
 def init_user_from_environment(environment_name, admin=False):
     """
@@ -726,6 +760,17 @@ def login():
         next_url = request.args.get('next', '')
         if current_user.is_authenticated:
             return redirect(next_url if len(next_url) else '/')
+        if not admin_account_created():
+            app_settings = {}
+            try:
+                app_settings = load_settings()
+            except Exception:
+                app_settings = {}
+
+            if _bootstrap_private_only(app_settings) and not _bootstrap_request_allowed(app_settings):
+                reason = 'Access denied from this network during initial setup.'
+                return _render_setup_required(reason)
+            return redirect(url_for('users_page'))
         return render_template('login.html', title='Login')
         
     # login code goes here
@@ -806,9 +851,94 @@ def get_users():
             User.backup_access,
             User.frozen,
             User.frozen_message,
+            User.client_uid,
+            User.last_login_at,
+            User.last_login_ip,
+            User.last_login_country,
+            User.last_login_country_code,
         ).all()
     ]
+    for item in all_users:
+        ts = item.get('last_login_at')
+        if ts:
+            try:
+                item['last_login_at'] = int(ts.timestamp())
+            except Exception:
+                item['last_login_at'] = None
+        item['last_login_country'] = item.get('last_login_country') or ''
+        item['last_login_country_code'] = item.get('last_login_country_code') or ''
     return jsonify(all_users)
+
+
+@auth_blueprint.route('/api/admin/user-history/<int:user_id>')
+@access_required('admin')
+def get_user_history(user_id):
+    user = User.query.filter_by(id=user_id).first()
+    if not user:
+        return jsonify({'success': False, 'error': 'User not found.', 'history': []}), 404
+
+    limit = request.args.get('limit', 100)
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 100
+    limit = max(1, min(limit, 500))
+
+    try:
+        history = get_access_events(limit=limit, kinds=['transfer'], user=user.user)
+    except Exception as e:
+        logger.error(f'Failed to load history for user {user.user}: {e}')
+        return jsonify({'success': False, 'error': 'Failed to load user history.', 'history': []}), 500
+
+    title_ids = sorted({str(item.get('title_id') or '').strip().upper() for item in history if item.get('title_id')})
+    title_names = {}
+    if title_ids:
+        try:
+            from app import titles
+            with titles.titledb_session() as titledb_loaded:
+                if titledb_loaded:
+                    for title_id in title_ids:
+                        try:
+                            info = titles.get_game_info(title_id) or {}
+                            if info.get('name'):
+                                title_names[title_id] = info.get('name')
+                        except Exception:
+                            continue
+        except Exception:
+            title_names = {}
+
+    ip_set = set()
+    title_set = set()
+    total_bytes = 0
+    for item in history:
+        title_id = str(item.get('title_id') or '').strip().upper()
+        if title_id:
+            item['title_id'] = title_id
+            title_set.add(title_id)
+            if title_id in title_names:
+                item['title_name'] = title_names[title_id]
+        remote_addr = str(item.get('remote_addr') or '').strip()
+        if remote_addr:
+            ip_set.add(remote_addr)
+        try:
+            total_bytes += max(0, int(item.get('bytes_sent') or 0))
+        except Exception:
+            pass
+
+    return jsonify({
+        'success': True,
+        'user': {
+            'id': user.id,
+            'user': user.user,
+        },
+        'history': history,
+        'summary': {
+            'downloads': len(history),
+            'unique_titles': len(title_set),
+            'unique_ips': len(ip_set),
+            'total_bytes': total_bytes,
+        }
+    })
 
 
 @auth_blueprint.route('/api/auth/lockouts', methods=['GET'])
@@ -899,6 +1029,7 @@ def delete_user():
     try:
         User.query.filter_by(id=user_id).delete()
         db.session.commit()
+        _invalidate_admin_exists_cache()
         logger.info(f'Successfully deleted user with id {user_id}.')
         return jsonify({'success': True})
     except Exception as e:
@@ -957,6 +1088,7 @@ def update_user():
         if password:
             user.password = generate_password_hash(password, method='scrypt')
         db.session.commit()
+        _invalidate_admin_exists_cache()
         logger.info(f'Successfully updated user {user.id} ({username}).')
 
     resp = {

@@ -31,6 +31,13 @@ TITLEDB_DEFAULT_FILES = [
     'versions.txt',
     'languages.json',
 ]
+TITLEDB_OPTIONAL_FILES = [
+    'cnmts-fixed.json',
+]
+
+GEOLITE_DB_DIR = os.path.join(DATA_DIR, 'geoip')
+GEOLITE_DB_FILE = os.path.join(GEOLITE_DB_DIR, 'GeoLite2-City.mmdb')
+GEOLITE_DB_URL = 'https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb'
 
 APP_VERSION = os.environ.get('AEROFOIL_VERSION') or os.environ.get('OWNFOIL_VERSION') or os.environ.get('APP_VERSION') or 'dev'
 
@@ -58,12 +65,17 @@ DEFAULT_SETTINGS = {
         "auth_ip_lockout_duration_seconds": 1800,
         # Permanent deny-list of IP/CIDR entries for authentication endpoints.
         "auth_permanent_ip_blacklist": [],
+        # ISO country codes (eg "US", "GB") to deny at request edge.
+        "auth_blocked_country_codes": [],
+        # Optional ISO country whitelist. When set, only these countries are allowed.
+        "auth_allowed_country_codes": [],
     },
     "library": {
         "paths": ["/games"],
         "auto_maintenance": False,
         "maintenance_interval_minutes": 720,
         "maintenance_delete_updates": True,
+        "conversion_staging_dir": "",
         "naming_templates": {
             "active": "default",
             "templates": {
@@ -91,13 +103,14 @@ DEFAULT_SETTINGS = {
     "titles": {
         "language": "en",
         "region": "US",
+        "prefer_english_metadata": False,
         "valid_keys": False,
         "manual_overrides": {},
     },
     "downloads": {
         "enabled": False,
         "interval_minutes": 60,
-        "min_seeders": 2,
+        "category": "aerofoil",
         "required_terms": [],
         "blacklist_terms": [],
         "search_prefix": "Nintendo Switch",
@@ -113,7 +126,8 @@ DEFAULT_SETTINGS = {
             "api_key": "",
             "indexer_ids": [],
             "categories": [],
-            "timeout_seconds": 15
+            "timeout_seconds": 15,
+            "search_limit": 100
         },
         "torrent_client": {
             "type": "qbittorrent",
@@ -121,13 +135,23 @@ DEFAULT_SETTINGS = {
             "username": "",
             "password": "",
             "category": "aerofoil",
-            "download_path": ""
+            "download_path": "",
+            "min_seeders": 2,
+        },
+        "usenet_client": {
+            "type": "sabnzbd",
+            "url": "",
+            "api_key": "",
+            "category": "aerofoil",
+            "min_age_minutes": 0,
         }
     },
     "shop": {
         "motd": "Welcome to your own shop!",
         "public": False,
+        "external_tinfoil_only": False,
         "encrypt": True,
+        "tinfoil_only_mode": False,
         "fast_transfer_mode": False,
         "public_key": "",
         "clientCertPub": "-----BEGIN PUBLIC KEY-----",

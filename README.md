@@ -84,14 +84,22 @@ New `AEROFOIL_*` variables are preferred. Legacy `OWNFOIL_*` names are still acc
 - `AEROFOIL_SECRET_KEY`: Flask secret key used for sessions/cookies. Recommended to set a long random value in production (default: auto-generated at startup).
 - `AEROFOIL_TRUST_PROXY_HEADERS`: enable trusting `X-Forwarded-For` when the proxy is in the trusted list (`true`/`false`, default: `false`).
 - `AEROFOIL_TRUSTED_PROXIES`: comma-separated proxy IPs/CIDRs (default: empty), for example `172.16.0.0/12,192.168.0.0/16`.
+- `AEROFOIL_CONVERSION_STAGING_ENABLED`: enable fixed Docker staging path (`/app/conversion-tmp`) for temporary NSP/XCI conversion output (`true`/`false`, default: unset/disabled).
+- `AEROFOIL_CONVERSION_STAGING_DIR`: absolute path for temporary NSP/XCI conversion output (default: empty, which keeps direct in-library conversion output).
 - `SHOP_SECTIONS_CACHE_TTL_S`: cache TTL for `/api/shop/sections` (seconds). Use `none`/unset for rebuild-only (default), `0` to disable caching. Recommended: `none` for stable libraries, or `600`-`900` for periodic refresh.
+- `SHOP_SECTIONS_ALL_ITEMS_CAP`: max number of items retained per discovery section before per-request slicing (default: `300`).
+- `SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB`: max number of items retained per discovery section when TitleDB is unavailable (default: `120`).
 - `MEDIA_INDEX_TTL_S`: cache TTL for icon/banner media index (seconds). Use `none`/unset for rebuild-only (default), `0` to disable caching. Recommended: `none` or `600`-`900`.
+- `AEROFOIL_TITLES_TOTAL_CACHE_TTL_S`: cache TTL for `/api/titles` total-count cache (seconds, default: `300`; legacy `OWNFOIL_TITLES_TOTAL_CACHE_TTL_S` also supported).
+- `AEROFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES`: max entries for `/api/titles` total-count cache (default: `256`; clamped to `16..4096`; legacy `OWNFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES` also supported).
 - `AEROFOIL_HOST`: bind host for the web server (default: `0.0.0.0`).
 - `AEROFOIL_PORT`: bind port for the web server (default: `8465`).
 - `AEROFOIL_WSGI_THREADS`: Waitress worker thread count (default: `32`).
 - `AEROFOIL_WSGI_CONNECTION_LIMIT`: max concurrent Waitress channels (default: `1000`).
 - `AEROFOIL_WSGI_CHANNEL_TIMEOUT_S`: idle channel timeout in seconds (default: `120`).
 - `AEROFOIL_WSGI_CLEANUP_INTERVAL_S`: Waitress cleanup interval in seconds (default: `30`).
+- `AEROFOIL_WSGI_MAX_REQUEST_BODY_SIZE`: max HTTP request body size in bytes for Waitress (default: `68853694464`, about `64.125 GB`).
+- `AEROFOIL_UPLOAD_TMP_DIR`: directory for temporary multipart upload files during request parsing (default: `<data>/tmp/uploads`; ensure enough free disk space for very large uploads).
 - `AEROFOIL_USE_FLASK_DEV`: set to `true`/`1` to force Flask dev server instead of Waitress.
 
 ## Using Python
@@ -138,16 +146,25 @@ In the `Settings` page under the `Library` section, you can add directories cont
 There is watchdog in place for all your added directories: files moved, renamed, added or removed will be reflected directly in your library.
 
 ## Library management
-In the `Manage` page, you can organize your library structure, delete older update files, and convert `nsp`/`xci` to `nsz`.
+In the `Manage` page, you can organize your library structure, delete older update files, delete scoped library content, clean up orphaned add-ons, and convert `nsp`/`xci` to `nsz`.
 
 ## Library browser UI
 - Card view: the Base/Update/DLC status icons are displayed above the action buttons.
 - Icon view: the `Game info` button is shown as an overlay on the game tile.
 
+### Discovery sections (`New` and `Recommended`)
+The home-page discovery rows are generated from **owned BASE titles only** (not update/DLC rows), and only when a real library file is linked.
+
+- `New`: sorted by most recent library file id (newest first), then the first items are used for the section.
+- `Recommended`: sorted by highest `download_count` first. If every candidate has `download_count = 0`, AeroFoil falls back to the same ordering as `New`.
+
+For the Web UI, these sections are returned through `/api/titles` as `discovery.newest` and `discovery.recommended`.
+
 ## Game info (TitleDB)
-The `Game info` modal uses TitleDB metadata (not Nintendo website scraping):
+The `Game info` modal uses TitleDB metadata:
 - `description`: shown as the game summary.
 - `screenshots`: displayed in a grid; click a screenshot to open it larger.
+- `DLC search`: admins can trigger a download search for related add-ons directly from the details flow.
 
 AeroFoil will download the TitleDB descriptions/screenshot dataset on demand to `./data/titledb/US.en.json` (Docker path: `/app/data/titledb/US.en.json`).
 
@@ -158,12 +175,13 @@ AeroFoil will download the TitleDB descriptions/screenshot dataset on demand to 
 Conversion details:
 - Uses the installed Python `nsz` package (with progress output).
 - Uses the same `keys.txt` uploaded in the `Settings` page.
+- Optional conversion staging directory lets you run temporary conversion IO on a different disk/pool before finalizing output into the library path.
 - Shows live status, per-file progress, and the current filename.
 - Filters out files smaller than 50 MB from the manual conversion dropdown.
 - The `Verbose` checkbox shows detailed task output; otherwise the task output stays clean.
 
-## Automatic update downloads (Prowlarr + Torrent Client)
-AeroFoil can automatically search for missing updates using Prowlarr, send matches to a torrent client (qBittorrent or Transmission), and ingest completed downloads back into the library. The UI is modeled after apps like Sonarr/Radarr with explicit connection tests.
+## Automatic update downloads (Prowlarr + Download Clients)
+AeroFoil can automatically search for missing updates using Prowlarr, route torrent results to a configured torrent client, route usenet results to a configured usenet client, and ingest completed downloads back into the library. The UI is modeled after apps like Sonarr/Radarr with explicit connection tests.
 
 ### Setup
 1. Open the `Settings` page and scroll to the **Downloads** section.
@@ -171,23 +189,30 @@ AeroFoil can automatically search for missing updates using Prowlarr, send match
    - **Search interval (minutes)**: how often AeroFoil will look for missing updates.
    - **Minimum seeders**: skip low‑availability results.
    - **Required terms / Blacklist terms**: fine‑tune search matches (comma separated).
-   - **Torrent category/tag**: used to tag downloads in the client (default `aerofoil`).
+   - **Torrent category/tag**: used to tag managed torrent downloads (default `aerofoil`).
 3. Configure **Prowlarr**:
    - **Prowlarr URL** (e.g. `http://localhost:9696`)
    - **API Key**
    - **Indexer IDs** (optional, comma separated). If set, AeroFoil will limit searches to these indexers.
    - Use **Test Prowlarr** to validate connectivity and indexer IDs (missing IDs show as warnings).
 4. Configure **Torrent Client**:
-   - **Client**: qBittorrent or Transmission.
+   - **Client**: qBittorrent, Transmission, or Deluge.
    - **Client URL** and credentials.
    - **Download path** (optional): if set, AeroFoil will warn if it doesn't exist or isn't writable.
    - Use **Test torrent client** to validate connectivity.
+5. Configure **Usenet Client** if you want Prowlarr usenet results to queue automatically:
+   - **Client**: SABnzbd.
+   - **Client URL** and **API Key**.
+   - **SABnzbd category**: AeroFoil uses this to identify managed usenet downloads.
+   - Use **Test usenet client** to validate connectivity.
 
 ### Notes
-- Prowlarr is used for searching and ranking results; the torrent client handles the actual downloads.
+- Prowlarr is used for searching and ranking results; AeroFoil routes each match to the configured torrent or usenet client based on the result protocol.
 - Warnings do not block tests; they highlight misconfigurations (e.g. missing indexer IDs or invalid download paths).
 - The downloader runs on a schedule and respects the configured interval, skipping runs if the interval has not elapsed.
-- Completed downloads are detected by category/tag and trigger a library scan + refresh.
+- Completed downloads are detected by torrent category/tag or SABnzbd category and trigger a library scan + refresh.
+- Manual search results include protocol-aware filtering, and pending queue entries can be removed from the downloads page if they become stale.
+- The downloads page shows both pending queue state and active client summaries, adjusting torrent-only columns when only usenet activity is present.
 
 ## Titles configuration
 In the `Settings` page under the `Titles` section is where you specify the language of your Shop (currently the same for all users).
@@ -203,11 +228,17 @@ The same section also includes login protection controls: temporary IP lockout a
 
 # Deployment notes
 - Recommended volumes: `/games`, `/app/config`, and `/app/data`.
+- Optional conversion staging volume: `/app/conversion-tmp` (recommended on SSD when libraries are on slower pools).
 - Map port `8465` from the container to any host port you prefer.
 - To bootstrap an admin account, set `USER_ADMIN_NAME` and `USER_ADMIN_PASSWORD` when starting the container.
+- Optional env var: `AEROFOIL_CONVERSION_STAGING_DIR` (or legacy `OWNFOIL_CONVERSION_STAGING_DIR`) to force a staging path from environment.
 - Cache TTL env vars (seconds):
   - `SHOP_SECTIONS_CACHE_TTL_S`: cache for `/api/shop/sections` (use `none`/unset for rebuild-only, `0` to disable caching).
+  - `SHOP_SECTIONS_ALL_ITEMS_CAP`: max discovery-section item cap before slicing (default: `300`).
+  - `SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB`: max discovery-section item cap without TitleDB (default: `120`).
   - `MEDIA_INDEX_TTL_S`: media cache index for icons/banners (use `none`/unset for rebuild-only, `0` to disable caching).
+  - `AEROFOIL_TITLES_TOTAL_CACHE_TTL_S` (legacy `OWNFOIL_TITLES_TOTAL_CACHE_TTL_S`): `/api/titles` total-count cache TTL (default: `300`).
+  - `AEROFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES` (legacy `OWNFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES`): `/api/titles` total-count cache capacity (default: `256`, clamped to `16..4096`).
 - Update the container with `docker pull luketanti/aerofoil:latest` and restart it.
 
 ## Reverse proxy: real client IP (Activity page)
@@ -248,7 +279,5 @@ Planned feature, in no particular order.
     - [x] Multiple backup versions per title (timestamp + note)
     - [x] Download/delete save backups from both CyberFoil and AeroFoil web UI
  - External services:
-    - [x] Prowlarr integration for automatic update downloads (via torrent client)
+    - [x] Prowlarr integration for automatic update downloads (via torrent and usenet clients)
     - [x] Automated update downloader pipeline (search -> download -> ingest)
-
-

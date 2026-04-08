@@ -1,13 +1,16 @@
 import copy
 import gc
+import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import threading
 import time
 import importlib.util
+from sqlalchemy.orm import aliased
 from app.constants import *
 from app.db import *
 from app import titles as titles_lib
@@ -17,6 +20,7 @@ from app.utils import *
 
 _organize_lock = threading.Lock()
 _pending_organize_paths = set()
+_pending_cleanup_roots = set()
 _SCAN_ADD_BATCH_SIZE = 250
 _SCAN_DELETE_PROGRESS_INTERVAL = 250
 _IDENTIFY_QUERY_BATCH_SIZE = 500
@@ -27,6 +31,12 @@ _memory_diagnostics = {
     'updated_at': 0,
     'phases': {}
 }
+_library_state_token_lock = threading.Lock()
+_library_state_token_cache = {
+    'token': None,
+    'updated_at': 0.0,
+}
+_LIBRARY_STATE_TOKEN_CACHE_TTL_S = 1.0
 
 def _diag_phase_start(phase, **metadata):
     now = time.time()
@@ -111,11 +121,7 @@ def _iter_library_files(library_path):
     """Yield supported files under a library path without building a full list in memory."""
     for root, _, filenames in os.walk(library_path):
         for filename in filenames:
-            try:
-                extension = filename.rsplit('.', 1)[-1].lower()
-            except Exception:
-                extension = ''
-            if extension in ALLOWED_EXTENSIONS:
+            if is_supported_content_path(filename):
                 yield os.path.join(root, filename)
 
 def add_library_complete(app, watcher, path):
@@ -347,7 +353,7 @@ def identify_library_files(library):
         _diag_phase_end(phase, reason='library_not_found')
         logger.warning(f'Library path {library_path} is not registered in database.')
         return
-    include_filename_retry = bool(titles_lib.Keys.keys_loaded)
+    include_filename_retry = bool(titles_lib.keys_loaded())
     include_orphaned = True
     nb_to_identify = count_file_ids_for_identification(
         library_id,
@@ -642,8 +648,9 @@ def add_missing_apps_to_db():
 def process_library_identification(app):
     logger.info(f"Starting library identification process for all libraries...")
     if not titles_lib.keys_loaded():
-        logger.warning("Skipping library identification: keys are not loaded yet.")
-        return
+        logger.warning(
+            "Keys are not loaded. Falling back to filename-based library identification."
+        )
     try:
         with app.app_context():
             libraries = get_libraries()
@@ -678,6 +685,7 @@ def update_titles():
                 break
             last_title_pk = title_batch[-1].id
             title_batch_ids = [title.id for title in title_batch]
+            _sync_apps_owned_flags(title_ids=title_batch_ids)
             app_rows = (
                 db.session.query(
                     Apps.title_id,
@@ -771,16 +779,89 @@ def get_library_status(title_id):
     }
     return library_status
 
-def get_library_cache_state_token():
-    """Cheap invalidation token based on persistent state metadata."""
-    parts = []
-    for label, path in (('db', DB_FILE), ('config', CONFIG_FILE)):
-        try:
-            st = os.stat(path)
-            parts.append(f"{label}:{int(st.st_mtime_ns)}:{int(st.st_size)}")
-        except OSError:
-            parts.append(f"{label}:missing")
-    return "|".join(parts)
+def _compute_library_cache_state_token():
+    """Build a token from library-related table state (not whole DB file mtime)."""
+    try:
+        row = db.session.execute(
+            text(
+                """
+                SELECT
+                    COALESCE((SELECT COUNT(*) FROM files), 0),
+                    COALESCE((SELECT MAX(id) FROM files), 0),
+                    COALESCE((SELECT SUM(size) FROM files), 0),
+                    COALESCE((SELECT SUM(CASE WHEN identified THEN 1 ELSE 0 END) FROM files), 0),
+                    COALESCE((SELECT SUM(
+                        (LENGTH(COALESCE(filepath, '')) + LENGTH(COALESCE(filename, '')) + COALESCE(size, 0))
+                        * ((id % 131) + 1)
+                    ) FROM files), 0),
+                    COALESCE((SELECT COUNT(*) FROM apps), 0),
+                    COALESCE((SELECT MAX(id) FROM apps), 0),
+                    COALESCE((SELECT SUM(CASE WHEN owned THEN 1 ELSE 0 END) FROM apps), 0),
+                    COALESCE((SELECT SUM(COALESCE(app_version_num, 0)) FROM apps), 0),
+                    COALESCE((SELECT SUM(
+                        (COALESCE(title_id, 0) + COALESCE(app_version_num, 0))
+                        * ((id % 127) + 1)
+                    ) FROM apps), 0),
+                    COALESCE((SELECT COUNT(*) FROM titles), 0),
+                    COALESCE((SELECT MAX(id) FROM titles), 0),
+                    COALESCE((SELECT SUM(CASE WHEN have_base THEN 1 ELSE 0 END) FROM titles), 0),
+                    COALESCE((SELECT SUM(CASE WHEN up_to_date THEN 1 ELSE 0 END) FROM titles), 0),
+                    COALESCE((SELECT SUM(CASE WHEN complete THEN 1 ELSE 0 END) FROM titles), 0),
+                    COALESCE((SELECT COUNT(*) FROM app_files), 0),
+                    COALESCE((SELECT MAX(app_id) FROM app_files), 0),
+                    COALESCE((SELECT MAX(file_id) FROM app_files), 0)
+                """
+            )
+        ).first()
+    except Exception:
+        # Conservative fallback during migration/bootstrap windows.
+        row = None
+
+    if row is None:
+        parts = []
+        for label, path in (('db', DB_FILE), ('config', CONFIG_FILE)):
+            try:
+                st = os.stat(path)
+                mtime_ns = getattr(st, 'st_mtime_ns', int(st.st_mtime * 1e9))
+                parts.append(f"{label}:{int(mtime_ns)}:{int(st.st_size)}")
+            except OSError:
+                parts.append(f"{label}:missing")
+        return "|".join(parts)
+    else:
+        fingerprint = ":".join(str(int(value or 0)) for value in row)
+
+    try:
+        config_stat = os.stat(CONFIG_FILE)
+        config_token = f"{int(getattr(config_stat, 'st_mtime_ns', int(config_stat.st_mtime * 1e9)))}:{int(config_stat.st_size)}"
+    except OSError:
+        config_token = "missing"
+
+    return f"lib:{fingerprint}|cfg:{config_token}"
+
+
+def invalidate_library_cache_state_token():
+    with _library_state_token_lock:
+        _library_state_token_cache['token'] = None
+        _library_state_token_cache['updated_at'] = 0.0
+
+
+def get_library_cache_state_token(force_refresh=False):
+    now = time.time()
+    with _library_state_token_lock:
+        cached_token = _library_state_token_cache.get('token')
+        cached_ts = float(_library_state_token_cache.get('updated_at') or 0.0)
+        if (
+            not force_refresh
+            and cached_token
+            and (now - cached_ts) < _LIBRARY_STATE_TOKEN_CACHE_TTL_S
+        ):
+            return str(cached_token)
+
+    token = _compute_library_cache_state_token()
+    with _library_state_token_lock:
+        _library_state_token_cache['token'] = token
+        _library_state_token_cache['updated_at'] = time.time()
+    return token
 
 
 # Bump this when the cached library schema changes.
@@ -802,7 +883,7 @@ def is_library_unchanged():
     if not saved_state_token:
         return False
 
-    current_state_token = get_library_cache_state_token()
+    current_state_token = get_library_cache_state_token(force_refresh=True)
     return saved_state_token == current_state_token
 
 def save_library_to_disk(library_data):
@@ -958,7 +1039,7 @@ def generate_library():
 
         library_data = {
             'version': LIBRARY_CACHE_VERSION,
-            'state_token': get_library_cache_state_token(),
+            'state_token': get_library_cache_state_token(force_refresh=True),
             'library': sorted(games_info, key=lambda x: (
                 "title_id_name" not in x,
                 x.get("title_id_name", "Unrecognized") or "Unrecognized",
@@ -1003,6 +1084,21 @@ def _safe_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+def _format_version_txt(value):
+    text = str(value or '').strip()
+    if not text:
+        return '0.0.0'
+    # Already semantic-like (for example "1.0.0").
+    if re.fullmatch(r'\d+(?:\.\d+){1,3}', text):
+        return text
+    num = _safe_int(text, default=-1)
+    if num < 0:
+        return text
+    major = (num >> 16) & 0xFFFF
+    minor = (num >> 8) & 0xFF
+    patch = num & 0xFF
+    return f"{major}.{minor}.{patch}"
 
 def _ensure_unique_path(path):
     if not os.path.exists(path):
@@ -1063,6 +1159,7 @@ def _format_nsz_command(command_template, input_file, output_file, threads=None,
         command_template = '{nsz_runner} --keys "{nsz_keys}" --minimal-output --verify -C -o "{output_dir}" "{input_file}"'
     command = command_template.format(
         nsz_runner=nsz_runner,
+        nsz_exe=nsz_runner,
         nsz_keys=nsz_keys,
         input_file=input_file,
         output_file=output_file,
@@ -1078,6 +1175,27 @@ def _format_nsz_command(command_template, input_file, output_file, threads=None,
     if threads and re.search(r'(^|\\s)(-t|--threads)\\s', command) is None:
         command = f"{command} -t {threads}"
     return command
+
+def _parse_command_args(command):
+    if isinstance(command, (list, tuple)):
+        args = [str(part) for part in command if str(part)]
+    else:
+        text = str(command or '').strip()
+        if not text:
+            raise ValueError('Conversion command is empty.')
+        try:
+            args = shlex.split(text, posix=(os.name != 'nt'))
+        except ValueError as e:
+            raise ValueError(f'Invalid conversion command syntax: {e}') from e
+    if not args:
+        raise ValueError('Conversion command is empty.')
+    return args
+
+def _format_command_for_log(command):
+    args = _parse_command_args(command)
+    if os.name == 'nt':
+        return subprocess.list2cmdline(args)
+    return ' '.join(shlex.quote(arg) for arg in args)
 
 def _expected_compressed_output_path(input_file):
     base, ext = os.path.splitext(str(input_file or ''))
@@ -1103,6 +1221,84 @@ def _resolve_existing_output_path(preferred_path):
         return alt
     return preferred_path
 
+def _get_conversion_staging_dir():
+    try:
+        from app.settings import load_settings
+        settings = load_settings()
+    except Exception:
+        return ''
+    library_cfg = settings.get('library', {}) if isinstance(settings, dict) else {}
+    raw_dir = str(library_cfg.get('conversion_staging_dir') or '').strip()
+    if not raw_dir:
+        return ''
+    return os.path.abspath(os.path.expanduser(raw_dir))
+
+def _ensure_conversion_staging_dir(path):
+    if not path:
+        return True, None
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception as e:
+        return False, f"Failed to create conversion staging directory {path}: {e}"
+    if not os.path.isdir(path):
+        return False, f"Conversion staging directory is not a directory: {path}"
+    if not os.access(path, os.W_OK):
+        return False, f"Conversion staging directory is not writable: {path}"
+    return True, None
+
+def _build_staging_output_path(source_path, expected_output_file, staging_root):
+    if not staging_root:
+        return expected_output_file
+    source_abs = os.path.abspath(str(source_path or ''))
+    hash_suffix = hashlib.sha1(source_abs.encode('utf-8')).hexdigest()[:16]
+    base_name = _sanitize_component(os.path.splitext(os.path.basename(source_abs))[0], fallback='file')
+    staging_dir = os.path.join(staging_root, f"{base_name}-{hash_suffix}")
+    return os.path.join(staging_dir, os.path.basename(expected_output_file))
+
+def _clear_staging_output_candidates(staged_output_file):
+    candidates = [staged_output_file]
+    alt = _alternate_compressed_output_path(staged_output_file)
+    if alt:
+        candidates.append(alt)
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            os.remove(candidate)
+
+def _cleanup_empty_parent_dirs(path, stop_path):
+    current = os.path.abspath(str(path or ''))
+    stop = os.path.abspath(str(stop_path or ''))
+    while current:
+        try:
+            common = os.path.commonpath([current, stop])
+        except ValueError:
+            break
+        if common != stop:
+            break
+        if current == stop:
+            break
+        try:
+            os.rmdir(current)
+        except OSError:
+            break
+        current = os.path.dirname(current)
+
+def _final_output_path_from_source(source_path, produced_output_path):
+    source_dir = os.path.dirname(str(source_path or ''))
+    produced_name = os.path.basename(str(produced_output_path or ''))
+    if not produced_name:
+        produced_name = os.path.basename(_expected_compressed_output_path(source_path))
+    return os.path.join(source_dir, produced_name)
+
+def _finalize_staged_conversion_output(source_path, staged_output_path, staging_root):
+    final_output_path = _final_output_path_from_source(source_path, staged_output_path)
+    existing_final = _resolve_existing_output_path(final_output_path)
+    if existing_final and os.path.exists(existing_final):
+        raise FileExistsError(f"Output already exists: {existing_final}")
+    os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
+    shutil.move(staged_output_path, final_output_path)
+    _cleanup_empty_parent_dirs(os.path.dirname(staged_output_path), staging_root)
+    return final_output_path
+
 def _summarize_conversion_failure(log_text, output_file=None):
     text = str(log_text or '')
     lowered = text.lower()
@@ -1119,15 +1315,16 @@ def _summarize_conversion_failure(log_text, output_file=None):
     return summary
 
 def _run_command(command, log_cb=None, stream_output=False, cancel_cb=None, timeout_seconds=None):
+    command_args = _parse_command_args(command)
     env = os.environ.copy()
     env['PYTHONIOENCODING'] = 'utf-8'
     env['PYTHONUTF8'] = '1'
     if not stream_output:
-        return subprocess.run(command, shell=True, capture_output=True, text=True, env=env)
+        return subprocess.run(command_args, shell=False, capture_output=True, text=True, env=env)
 
     process = subprocess.Popen(
-        command,
-        shell=True,
+        command_args,
+        shell=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -1160,7 +1357,7 @@ def _run_command(command, log_cb=None, stream_output=False, cancel_cb=None, time
                 time.sleep(0.2)
     returncode = process.wait()
     stderr_summary = '\n'.join(streamed_lines[-40:]) if streamed_lines else ''
-    result = subprocess.CompletedProcess(command, returncode, '', stderr_summary)
+    result = subprocess.CompletedProcess(command_args, returncode, '', stderr_summary)
     return result
 
 def _choose_primary_app(apps):
@@ -1186,6 +1383,25 @@ def _compute_relative_folder(library_path, full_path):
         return ''
     normalized = folder.replace(library_path, '')
     return normalized if normalized.startswith(os.sep) else os.sep + normalized
+
+def _sync_apps_owned_flags(app_ids=None, title_ids=None):
+    has_files_expr = (
+        db.session.query(app_files.c.app_id)
+        .filter(app_files.c.app_id == Apps.id)
+        .exists()
+    )
+    query = db.session.query(Apps)
+    if app_ids is not None:
+        scoped_app_ids = [int(v) for v in (app_ids or []) if v is not None]
+        if not scoped_app_ids:
+            return 0
+        query = query.filter(Apps.id.in_(scoped_app_ids))
+    elif title_ids is not None:
+        scoped_title_ids = [int(v) for v in (title_ids or []) if v is not None]
+        if not scoped_title_ids:
+            return 0
+        query = query.filter(Apps.title_id.in_(scoped_title_ids))
+    return int(query.update({Apps.owned: has_files_expr}, synchronize_session=False) or 0)
 
 def _replace_or_create_converted_file_row(
     source_file_id,
@@ -1231,6 +1447,8 @@ def _replace_or_create_converted_file_row(
         )
 
     if updated > 0:
+        for app in source_apps:
+            app.owned = True
         return
 
     new_file = Files(
@@ -1253,6 +1471,7 @@ def _replace_or_create_converted_file_row(
     for app in source_apps:
         if new_file not in app.files:
             app.files.append(new_file)
+        app.owned = True
 
 def _normalize_naming_templates(raw_templates):
     default_templates = (
@@ -1335,8 +1554,17 @@ def _build_destination(library_path, file_entry, app, title_name, dlc_name, acti
     safe_ext = _sanitize_component(extension, fallback='nsp')
     safe_app_id = _sanitize_component(app.app_id or safe_title_id)
     safe_dlc_name = _sanitize_component(dlc_name or app.app_id)
+    version_txt = None
+    app_id_for_lookup = str(app.app_id or '').strip()
+    if app_id_for_lookup:
+        for candidate in (app_id_for_lookup, app_id_for_lookup.lower(), app_id_for_lookup.upper()):
+            version_txt = titles_lib.get_app_id_version_from_versions_txt(candidate)
+            if version_txt:
+                break
+    semantic_version_txt = _format_version_txt(version_txt or version)
+    safe_version_txt = _sanitize_component(semantic_version_txt, fallback='0.0.0')
 
-    template_vars = {
+    template_vars_common = {
         'title': safe_title,
         'title_id': safe_title_id,
         'app_id': safe_app_id,
@@ -1344,6 +1572,8 @@ def _build_destination(library_path, file_entry, app, title_name, dlc_name, acti
         'ext': safe_ext,
         'dlc_name': safe_dlc_name,
     }
+    template_vars_filename = dict(template_vars_common)
+    template_vars_filename['version_txt'] = safe_version_txt
 
     if app.app_type == APP_TYPE_BASE:
         section = active_template.get('base', {})
@@ -1362,12 +1592,12 @@ def _build_destination(library_path, file_entry, app, title_name, dlc_name, acti
         folder_tpl = section.get('folder')
         filename_tpl = section.get('filename')
 
-    folder_rel = _render_template(folder_tpl, template_vars)
+    folder_rel = _render_template(folder_tpl, template_vars_common)
     if not folder_rel:
         folder_rel = _sanitize_component(f"{safe_title} [{safe_title_id}]")
     folder_rel = _sanitize_relative_path(folder_rel, fallback='Other')
 
-    filename = _render_template(filename_tpl, template_vars)
+    filename = _render_template(filename_tpl, template_vars_filename)
     if not filename:
         filename = file_entry.filename or f"{safe_title} [{safe_title_id}] [UNKNOWN].{safe_ext}"
     filename = _sanitize_component(filename)
@@ -1713,27 +1943,261 @@ def enqueue_organize_paths(filepaths):
         return
     with _organize_lock:
         for path in filepaths:
-            if path:
-                _pending_organize_paths.add(path)
+            if not path:
+                continue
+            normalized_path = os.path.normpath(path)
+            if os.path.isfile(normalized_path):
+                _pending_organize_paths.add(normalized_path)
+                continue
+            if os.path.isdir(normalized_path):
+                for root, _, filenames in os.walk(normalized_path):
+                    for filename in filenames:
+                        _pending_organize_paths.add(os.path.normpath(os.path.join(root, filename)))
+                continue
+            _pending_organize_paths.add(normalized_path)
+
+
+def enqueue_cleanup_roots(paths):
+    if not paths:
+        return
+    with _organize_lock:
+        for path in paths:
+            if path and os.path.isdir(path):
+                _pending_cleanup_roots.add(os.path.normpath(path))
+
+
+def _cleanup_import_staging_roots(paths):
+    for root in paths or []:
+        if not root or not os.path.isdir(root):
+            continue
+        for dirpath, _, filenames in os.walk(root, topdown=False):
+            for filename in filenames:
+                if is_supported_content_path(filename):
+                    continue
+                try:
+                    os.remove(os.path.join(dirpath, filename))
+                except OSError:
+                    continue
+            try:
+                if not os.listdir(dirpath):
+                    os.rmdir(dirpath)
+            except OSError:
+                continue
 
 def organize_pending_downloads():
     with _organize_lock:
         if not _pending_organize_paths:
-            return
-        pending = list(_pending_organize_paths)
-        _pending_organize_paths.clear()
-    results = organize_files(pending, dry_run=False, verbose=False)
-    if not results.get('success'):
-        logger.warning("Failed to auto-organize completed downloads: %s", results.get('errors'))
+            pending = []
+        else:
+            pending = list(_pending_organize_paths)
+            _pending_organize_paths.clear()
+        cleanup_roots = list(_pending_cleanup_roots)
+        _pending_cleanup_roots.clear()
+    if pending:
+        results = organize_files(pending, dry_run=False, verbose=False)
+        if not results.get('success'):
+            logger.warning("Failed to auto-organize completed downloads: %s", results.get('errors'))
+    if cleanup_roots:
+        _cleanup_import_staging_roots(cleanup_roots)
 
-def delete_older_updates(dry_run=False, verbose=False, detail_limit=200):
-    results = {
+def _new_delete_results():
+    return {
         'success': True,
         'deleted': 0,
         'skipped': 0,
+        'mutated': False,
         'errors': [],
         'details': []
     }
+
+def _merge_delete_results(results, partial_results, add_detail=None):
+    if not partial_results:
+        return
+    results['deleted'] += int(partial_results.get('deleted') or 0)
+    results['skipped'] += int(partial_results.get('skipped') or 0)
+    if partial_results.get('mutated'):
+        results['mutated'] = True
+    results['errors'].extend(partial_results.get('errors') or [])
+    if add_detail:
+        for detail in partial_results.get('details') or []:
+            add_detail(detail)
+
+def _resolve_delete_targets(scope, title_id=None, app_id=None, app_type=None, version=None):
+    scope_name = str(scope or '').strip().lower()
+    normalized_title_id = str(title_id or '').strip().upper()
+    normalized_app_id = str(app_id or '').strip().upper()
+    normalized_app_type = str(app_type or '').strip().upper()
+    normalized_version = None if version is None else str(version).strip()
+
+    if scope_name == 'title_cascade':
+        if not normalized_title_id:
+            raise ValueError('Missing title_id for title cascade delete.')
+        title = Titles.query.filter(func.upper(Titles.title_id) == normalized_title_id).first()
+        if not title:
+            raise ValueError(f'Title {normalized_title_id} was not found.')
+        return (
+            Apps.query
+            .filter(
+                Apps.title_id == title.id,
+                Apps.owned.is_(True),
+                Apps.app_type.in_([APP_TYPE_BASE, APP_TYPE_UPD, APP_TYPE_DLC])
+            )
+            .all()
+        )
+
+    if scope_name == 'app_version':
+        if not normalized_app_id:
+            raise ValueError('Missing app_id for app version delete.')
+        if normalized_app_type not in (APP_TYPE_UPD, APP_TYPE_DLC):
+            raise ValueError('app_type must be UPDATE or DLC for app version delete.')
+        if normalized_version in (None, ''):
+            raise ValueError('Missing version for app version delete.')
+        return (
+            Apps.query
+            .filter(
+                func.upper(Apps.app_id) == normalized_app_id,
+                Apps.app_type == normalized_app_type,
+                Apps.app_version == normalized_version,
+                Apps.owned.is_(True)
+            )
+            .all()
+        )
+
+    raise ValueError(f'Unsupported delete scope: {scope}')
+
+def _delete_target_apps(target_apps, dry_run=False, verbose=False, detail_limit=200, include_skip_details=True, count_skips=True):
+    results = _new_delete_results()
+    detail_count = 0
+
+    def add_detail(message):
+        nonlocal detail_count
+        if (verbose or dry_run) and detail_count < detail_limit:
+            results['details'].append(message)
+            detail_count += 1
+
+    target_apps = [app for app in (target_apps or []) if app is not None]
+    if not target_apps:
+        add_detail('No owned content matched the requested delete target.')
+        return results
+
+    target_app_ids = {int(app.id) for app in target_apps if getattr(app, 'id', None) is not None}
+    processed_file_ids = set()
+    candidate_filepaths = []
+
+    for app in target_apps:
+        app_label = f"{app.app_type} {app.app_id} v{app.app_version}"
+        app_files_list = [file_entry for file_entry in list(app.files or []) if file_entry]
+        if not app_files_list:
+            if count_skips:
+                results['skipped'] += 1
+            if include_skip_details:
+                add_detail(f"Skip {app_label}: no linked files.")
+            continue
+
+        for file_entry in app_files_list:
+            file_id = getattr(file_entry, 'id', None)
+            if file_id is None or file_id in processed_file_ids:
+                continue
+            processed_file_ids.add(file_id)
+
+            filepath = str(getattr(file_entry, 'filepath', '') or '')
+            linked_apps = [linked for linked in list(getattr(file_entry, 'apps', []) or []) if linked is not None]
+            foreign_apps = [linked for linked in linked_apps if getattr(linked, 'id', None) not in target_app_ids]
+            if foreign_apps:
+                foreign_labels = ', '.join(
+                    f"{linked.app_type} {linked.app_id} v{linked.app_version}"
+                    for linked in foreign_apps
+                )
+                if count_skips:
+                    results['skipped'] += 1
+                if include_skip_details:
+                    add_detail(f"Skip shared file {filepath}: linked to non-target apps {foreign_labels}.")
+                continue
+
+            candidate_filepaths.append(filepath)
+
+    unique_filepaths = list(dict.fromkeys([path for path in candidate_filepaths if path]))
+    if not unique_filepaths:
+        add_detail('No deletable files matched the requested delete target.')
+        return results
+
+    for filepath in unique_filepaths:
+        if dry_run:
+            results['deleted'] += 1
+            add_detail(f"Plan delete: {filepath}.")
+            continue
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            delete_file_by_filepath(filepath)
+            results['deleted'] += 1
+            results['mutated'] = True
+            add_detail(f"Deleted: {filepath}.")
+        except Exception as e:
+            logger.error(f"Failed to delete file {filepath}: {e}")
+            db.session.rollback()
+            results['errors'].append(str(e))
+            add_detail(f"Error deleting {filepath}: {e}.")
+
+    if results['errors']:
+        results['success'] = False
+    return results
+
+def delete_library_content(scope, dry_run=False, verbose=False, detail_limit=200, title_id=None, app_id=None, app_type=None, version=None):
+    try:
+        target_apps = _resolve_delete_targets(
+            scope=scope,
+            title_id=title_id,
+            app_id=app_id,
+            app_type=app_type,
+            version=version
+        )
+    except ValueError as e:
+        results = _new_delete_results()
+        results['success'] = False
+        results['errors'].append(str(e))
+        return results
+
+    return _delete_target_apps(
+        target_apps,
+        dry_run=dry_run,
+        verbose=verbose,
+        detail_limit=detail_limit
+    )
+
+def delete_orphaned_addons(dry_run=False, verbose=False, detail_limit=200):
+    base_apps = aliased(Apps)
+    owned_base_title_ids = (
+        db.session.query(base_apps.title_id.label('title_fk'))
+        .filter(
+            base_apps.app_type == APP_TYPE_BASE,
+            base_apps.owned.is_(True)
+        )
+        .distinct()
+        .subquery()
+    )
+    target_apps = (
+        Apps.query
+        .join(Titles, Apps.title_id == Titles.id)
+        .filter(
+            Apps.owned.is_(True),
+            Apps.app_type.in_([APP_TYPE_UPD, APP_TYPE_DLC]),
+            ~Apps.title_id.in_(db.session.query(owned_base_title_ids.c.title_fk))
+        )
+        .all()
+    )
+    results = _delete_target_apps(
+        target_apps,
+        dry_run=dry_run,
+        verbose=verbose,
+        detail_limit=detail_limit,
+        include_skip_details=False,
+        count_skips=False,
+    )
+    return results
+
+def delete_older_updates(dry_run=False, verbose=False, detail_limit=200):
+    results = _new_delete_results()
     detail_count = 0
 
     def add_detail(message):
@@ -1750,47 +2214,29 @@ def delete_older_updates(dry_run=False, verbose=False, detail_limit=200):
             owned=True
         ).all()
         if len(update_apps) <= 1:
-            results['skipped'] += 1
-            add_detail(f"Skip updates for {title.title_id}: {len(update_apps)} owned update(s).")
             continue
 
         latest_app = max(update_apps, key=lambda app: _safe_int(app.app_version))
         for app in update_apps:
             if app.id == latest_app.id:
                 continue
-            filepaths = [file.filepath for file in list(app.files)]
-            if not filepaths:
-                results['skipped'] += 1
-                add_detail(f"Skip no files for update {app.app_id} v{app.app_version}.")
-                continue
-            for filepath in filepaths:
-                if dry_run:
-                    results['deleted'] += 1
-                    add_detail(f"Plan delete: {filepath}.")
-                    continue
-                try:
-                    if filepath and os.path.exists(filepath):
-                        os.remove(filepath)
-                    delete_file_by_filepath(filepath)
-                    results['deleted'] += 1
-                    add_detail(f"Deleted: {filepath}.")
-                except Exception as e:
-                    logger.error(f"Failed to delete update {filepath}: {e}")
-                    results['errors'].append(str(e))
-                    add_detail(f"Error deleting {filepath}: {e}.")
+            remaining_detail_limit = max(0, detail_limit - detail_count)
+            partial_results = _delete_target_apps(
+                [app],
+                dry_run=dry_run,
+                verbose=verbose,
+                detail_limit=remaining_detail_limit,
+                include_skip_details=False,
+                count_skips=False,
+            )
+            _merge_delete_results(results, partial_results, add_detail=add_detail)
 
     if results['errors']:
         results['success'] = False
     return results
 
 def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
-    results = {
-        'success': True,
-        'deleted': 0,
-        'skipped': 0,
-        'errors': [],
-        'details': []
-    }
+    results = _new_delete_results()
     detail_count = 0
 
     def add_detail(message):
@@ -1819,8 +2265,6 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
     for app in apps:
         app_files_list = [f for f in list(app.files or []) if f and f.filepath]
         if len(app_files_list) <= 1:
-            results['skipped'] += 1
-            add_detail(f"Skip {app.app_id} v{app.app_version}: {len(app_files_list)} file(s).")
             continue
 
         ordered = sorted(app_files_list, key=file_rank, reverse=True)
@@ -1839,8 +2283,6 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
             except Exception:
                 linked_apps_count = 0
             if linked_apps_count > 1:
-                results['skipped'] += 1
-                add_detail(f"Skip shared file {dup_filepath}: linked to {linked_apps_count} app records.")
                 continue
 
             if dry_run:
@@ -1900,6 +2342,15 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
         add_detail(warning)
         if log_cb:
             log_cb(warning)
+    conversion_staging_dir = _get_conversion_staging_dir()
+    staging_ok, staging_error = _ensure_conversion_staging_dir(conversion_staging_dir)
+    if not staging_ok:
+        results['success'] = False
+        results['errors'].append(staging_error)
+        add_detail(staging_error)
+        return results
+    if conversion_staging_dir and log_cb:
+        log_cb(f"Using conversion staging directory: {conversion_staging_dir}")
 
     query = Files.query.filter(Files.extension.in_(['nsp', 'xci']))
     if library_id:
@@ -1947,8 +2398,8 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                 progress_cb(processed, total_files)
             continue
 
-        output_file = _expected_compressed_output_path(source_path)
-        existing_output = _resolve_existing_output_path(output_file)
+        final_output_file = _expected_compressed_output_path(source_path)
+        existing_output = _resolve_existing_output_path(final_output_file)
         if existing_output and os.path.exists(existing_output):
             results['skipped'] += 1
             add_detail(f"Skip existing output: {existing_output}.")
@@ -1959,19 +2410,41 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                 progress_cb(processed, total_files)
             continue
 
+        command_output_file = _build_staging_output_path(source_path, final_output_file, conversion_staging_dir)
+        if conversion_staging_dir:
+            try:
+                os.makedirs(os.path.dirname(command_output_file), exist_ok=True)
+                _clear_staging_output_candidates(command_output_file)
+            except Exception as e:
+                results['errors'].append(str(e))
+                add_detail(f"Error preparing staging output for {source_path}: {e}.")
+                processed += 1
+                if progress_cb:
+                    progress_cb(processed, total_files)
+                continue
+
         command = _format_nsz_command(
             command_template,
             source_path,
-            output_file,
+            command_output_file,
             threads=threads,
             verify=verify
         )
+        try:
+            command_args = _parse_command_args(command)
+        except ValueError as e:
+            results['errors'].append(str(e))
+            add_detail(f"Error preparing command for {source_path}: {e}.")
+            processed += 1
+            if progress_cb:
+                progress_cb(processed, total_files)
+            continue
 
         if dry_run:
             results['converted'] += 1
-            add_detail(f"Plan convert: {source_path} -> {output_file}.")
+            add_detail(f"Plan convert: {source_path} -> {final_output_file}.")
             if log_cb:
-                log_cb(f"Plan convert: {source_path} -> {output_file}.")
+                log_cb(f"Plan convert: {source_path} -> {final_output_file}.")
             processed += 1
             if progress_cb:
                 progress_cb(processed, total_files)
@@ -1979,16 +2452,16 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
 
         try:
             if log_cb:
-                log_cb(f"Running: {command}")
+                log_cb(f"Running: {_format_command_for_log(command_args)}")
             process = _run_command(
-                command,
+                command_args,
                 log_cb=log_cb,
                 stream_output=stream_output,
                 cancel_cb=cancel_cb,
                 timeout_seconds=timeout_seconds
             )
             if process.returncode != 0:
-                failed_output = _resolve_existing_output_path(output_file)
+                failed_output = _resolve_existing_output_path(command_output_file)
                 failure_message = _summarize_conversion_failure(process.stderr, failed_output)
                 results['errors'].append(failure_message)
                 add_detail(f"Error converting {source_path}: {failure_message}.")
@@ -1996,7 +2469,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                 if progress_cb:
                     progress_cb(processed, total_files)
                 continue
-            output_file = _resolve_existing_output_path(output_file)
+            output_file = _resolve_existing_output_path(command_output_file)
             if not output_file or not os.path.exists(output_file):
                 results['errors'].append(f'Output not found: {output_file}')
                 add_detail(f"Error missing output: {output_file}.")
@@ -2004,6 +2477,24 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                 if progress_cb:
                     progress_cb(processed, total_files)
                 continue
+            if conversion_staging_dir:
+                try:
+                    output_file = _finalize_staged_conversion_output(
+                        source_path=source_path,
+                        staged_output_path=output_file,
+                        staging_root=conversion_staging_dir
+                    )
+                except Exception as e:
+                    try:
+                        _clear_staging_output_candidates(command_output_file)
+                    except Exception:
+                        pass
+                    results['errors'].append(str(e))
+                    add_detail(f"Error finalizing staged output for {source_path}: {e}.")
+                    processed += 1
+                    if progress_cb:
+                        progress_cb(processed, total_files)
+                    continue
 
             output_ext = os.path.splitext(output_file)[1].lstrip('.').lower() or 'nsz'
             if delete_original:
@@ -2023,6 +2514,9 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                     source_last_attempt=source_last_attempt,
                     source_apps=source_apps
                 )
+                for app in source_apps:
+                    app.owned = True
+                _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
                 add_detail(f"Converted and replaced: {old_path} -> {output_file}.")
             else:
@@ -2036,6 +2530,8 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                     for app in source_apps:
                         if existing_file not in app.files:
                             app.files.append(existing_file)
+                        app.owned = True
+                    _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                     db.session.commit()
                     add_detail(f"Converted output already indexed: {output_file}.")
                 else:
@@ -2058,6 +2554,8 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                     db.session.flush()
                     for app in source_apps:
                         app.files.append(new_file)
+                        app.owned = True
+                    _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                     db.session.commit()
                     add_detail(f"Converted: {source_path} -> {output_file}.")
 
@@ -2145,21 +2643,54 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
         results['details'].append(warning)
         if log_cb:
             log_cb(warning)
-    output_file = _expected_compressed_output_path(source_path)
-    existing_output = _resolve_existing_output_path(output_file)
+    conversion_staging_dir = _get_conversion_staging_dir()
+    staging_ok, staging_error = _ensure_conversion_staging_dir(conversion_staging_dir)
+    if not staging_ok:
+        results['success'] = False
+        results['errors'].append(staging_error)
+        if verbose:
+            results['details'].append(staging_error)
+        return results
+    if conversion_staging_dir and log_cb:
+        log_cb(f"Using conversion staging directory: {conversion_staging_dir}")
+
+    final_output_file = _expected_compressed_output_path(source_path)
+    existing_output = _resolve_existing_output_path(final_output_file)
     if existing_output and os.path.exists(existing_output):
         results['skipped'] = 1
         if verbose:
             results['details'].append(f"Skip existing output: {existing_output}.")
         return results
 
+    command_output_file = _build_staging_output_path(source_path, final_output_file, conversion_staging_dir)
+    if conversion_staging_dir:
+        try:
+            os.makedirs(os.path.dirname(command_output_file), exist_ok=True)
+            _clear_staging_output_candidates(command_output_file)
+        except Exception as e:
+            results['success'] = False
+            results['errors'].append(str(e))
+            if verbose:
+                results['details'].append(f"Error preparing staging output: {e}.")
+            return results
+
     command = _format_nsz_command(
         command_template,
         source_path,
-        output_file,
+        command_output_file,
         threads=threads,
         verify=verify
     )
+    try:
+        command_args = _parse_command_args(command)
+    except ValueError as e:
+        results['success'] = False
+        results['errors'].append(str(e))
+        if verbose:
+            results['details'].append(f"Error preparing command for {source_path}: {e}.")
+        if progress_cb:
+            progress_cb(1, 1)
+        return results
 
     if cancel_cb and cancel_cb():
         if log_cb:
@@ -2169,23 +2700,23 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
     if dry_run:
         results['converted'] = 1
         if verbose:
-            results['details'].append(f"Plan convert: {source_path} -> {output_file}.")
+            results['details'].append(f"Plan convert: {source_path} -> {final_output_file}.")
         if progress_cb:
             progress_cb(1, 1)
         return results
 
     try:
         if log_cb:
-            log_cb(f"Running: {command}")
+            log_cb(f"Running: {_format_command_for_log(command_args)}")
         process = _run_command(
-            command,
+            command_args,
             log_cb=log_cb,
             stream_output=stream_output,
             cancel_cb=cancel_cb,
             timeout_seconds=timeout_seconds
         )
         if process.returncode != 0:
-            failed_output = _resolve_existing_output_path(output_file)
+            failed_output = _resolve_existing_output_path(command_output_file)
             failure_message = _summarize_conversion_failure(process.stderr, failed_output)
             results['success'] = False
             results['errors'].append(failure_message)
@@ -2194,7 +2725,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
             if progress_cb:
                 progress_cb(1, 1)
             return results
-        output_file = _resolve_existing_output_path(output_file)
+        output_file = _resolve_existing_output_path(command_output_file)
         if not output_file or not os.path.exists(output_file):
             results['success'] = False
             results['errors'].append(f'Output not found: {output_file}')
@@ -2203,6 +2734,25 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
             if progress_cb:
                 progress_cb(1, 1)
             return results
+        if conversion_staging_dir:
+            try:
+                output_file = _finalize_staged_conversion_output(
+                    source_path=source_path,
+                    staged_output_path=output_file,
+                    staging_root=conversion_staging_dir
+                )
+            except Exception as e:
+                try:
+                    _clear_staging_output_candidates(command_output_file)
+                except Exception:
+                    pass
+                results['success'] = False
+                results['errors'].append(str(e))
+                if verbose:
+                    results['details'].append(f"Error finalizing staged output: {e}.")
+                if progress_cb:
+                    progress_cb(1, 1)
+                return results
 
         output_ext = os.path.splitext(output_file)[1].lstrip('.').lower() or 'nsz'
         if delete_original:
@@ -2222,6 +2772,9 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                 source_last_attempt=source_last_attempt,
                 source_apps=source_apps
             )
+            for app in source_apps:
+                app.owned = True
+            _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
             db.session.commit()
             if verbose:
                 results['details'].append(f"Converted and replaced: {old_path} -> {output_file}.")
@@ -2236,6 +2789,8 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                 for app in source_apps:
                     if existing_file not in app.files:
                         app.files.append(existing_file)
+                    app.owned = True
+                _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
                 if verbose:
                     results['details'].append(f"Converted output already indexed: {output_file}.")
@@ -2259,6 +2814,8 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                 db.session.flush()
                 for app in source_apps:
                     app.files.append(new_file)
+                    app.owned = True
+                _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
             if verbose:
                 results['details'].append(f"Converted: {source_path} -> {output_file}.")
