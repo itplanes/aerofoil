@@ -28,6 +28,15 @@ class _Session:
 
 
 class CheatServiceTests(unittest.TestCase):
+    def test_adds_missing_switchable_section_header(self):
+        service = CheatService()
+        self.assertEqual(
+            '[Infinite Bells]\n04000000 00000000 00000001',
+            service.ensure_switchable_section('Infinite Bells', '04000000 00000000 00000001'),
+        )
+        existing = '[60 FPS]\n04000000 00000000 0000003C'
+        self.assertEqual(existing, service.ensure_switchable_section('60 FPS', existing))
+
     def test_list_builds_summarizes_tags(self):
         service = CheatService()
         service._load_title = lambda _title_id: {

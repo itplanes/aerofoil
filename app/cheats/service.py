@@ -29,6 +29,7 @@ _GRAPHICS_PATTERNS = (
     ('ambient_occlusion', re.compile(r'(?i)(?:ambient\s*occlusion|\bssao\b)')),
 )
 _GENERIC_GRAPHICS_RE = re.compile(r'(?i)(?:graphics?|visual|image\s*quality|quality\s*(?:mod|boost|preset))')
+_CHEAT_SECTION_RE = re.compile(r'(?m)^\s*[\[{][^\]\}\r\n]+[\]}]\s*$')
 
 
 class InvalidCheatIdentifier(ValueError):
@@ -177,6 +178,14 @@ class CheatService:
             'conflict_groups': conflict_groups,
         }
 
+    @staticmethod
+    def ensure_switchable_section(name, content):
+        clean_name = str(name or 'Unnamed cheat').replace('[', '(').replace(']', ')').strip() or 'Unnamed cheat'
+        clean_content = str(content or '').replace('\x00', '').strip()
+        if not clean_content or _CHEAT_SECTION_RE.search(clean_content):
+            return clean_content
+        return f'[{clean_name}]\n{clean_content}'
+
     def _get_json(self, url):
         response = self._session.get(
             url,
@@ -243,7 +252,7 @@ class CheatService:
                 for name, content in entries.items():
                     if not isinstance(name, str) or not isinstance(content, str):
                         continue
-                    content = content.replace('\x00', '').strip()
+                    content = self.ensure_switchable_section(name, content)
                     if not content or len(content.encode('utf-8')) > _MAX_CHEAT_CONTENT:
                         continue
                     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
