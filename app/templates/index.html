@@ -807,8 +807,9 @@
         const appType = String((game && game.app_type) || '').toUpperCase();
         const includeBaseStatus = options.includeBaseStatus === true;
         const includeDlcUpdateStatus = options.includeDlcUpdateStatus === true;
-        const includeDlcCoverage = game?.has_all_dlcs !== undefined
-            && (appType === 'BASE' || (Array.isArray(game?.dlc_list) && game.dlc_list.length > 0));
+        // Update currency and DLC coverage describe the whole title family, not
+        // an individual DLC item. Keep those aggregate badges on BASE cards.
+        const includeDlcCoverage = game?.has_all_dlcs !== undefined && appType === 'BASE';
 
         if (game?.owned !== undefined) {
             descriptors.push({
@@ -827,7 +828,7 @@
         if (game?.has_latest_version !== undefined && (appType !== 'DLC' || includeDlcUpdateStatus)) {
             descriptors.push({
                 key: 'updates',
-                label: game.has_latest_version ? 'Up to Date' : 'Update Available',
+                label: game.has_latest_version ? 'Game Update Current' : 'Game Update Available',
                 tone: game.has_latest_version ? 'success' : 'warning',
             });
         }
@@ -2100,7 +2101,7 @@
         const metaItems = [];
         const statusItems = getLibraryStatusDescriptors(game, {
             includeBaseStatus: String(game.app_type || '').toUpperCase() === 'DLC',
-            includeDlcUpdateStatus: true,
+            includeDlcUpdateStatus: false,
         });
         const genres = splitGenres(getGameGenre(game));
         if (genres.length) {

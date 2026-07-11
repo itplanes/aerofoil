@@ -31,6 +31,7 @@
         'No data available.': '暂无数据。', 'Loading...': '加载中…', 'Uploading...': '上传中…',
         'Select all': '全选', 'Deselect all': '取消全选', 'Previous': '上一页', 'Next': '下一页',
         'Game': '游戏', 'Games': '游戏', 'Base': '本体', 'Update': '更新', 'Updates': '更新',
+        'Game Update Current': '游戏更新：已是最新', 'Game Update Available': '游戏更新：有新版本',
         'DLC': 'DLC', 'Region': '区域', 'Language': '语言', 'Description': '简介',
         'Organize library': '整理游戏库', 'Delete duplicates': '删除重复文件',
         'Delete older updates': '删除旧更新', 'Dry run': '仅预览', 'Scan library': '扫描游戏库',
