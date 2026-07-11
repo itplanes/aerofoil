@@ -46,6 +46,7 @@ class CheatService:
             'AEROFOIL_CHEATS_DB_BASE_URL',
             'https://raw.githubusercontent.com/HamletDuFromage/switch-cheats-db/master',
         ).rstrip('/')
+        self._base_url = base
         self._local_db_dir = os.getenv('AEROFOIL_CHEATS_DB_DIR', '').strip()
         self._update_db_dir = os.getenv('AEROFOIL_CHEATS_DB_UPDATE_DIR', '/app/data/cheatdb').strip()
         self._archive_url = os.getenv(
@@ -63,6 +64,41 @@ class CheatService:
         self._cache = {}
         self._lock = threading.Lock()
         self._sync_lock = threading.Lock()
+
+    @staticmethod
+    def format_version(value):
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return str(value or '')
+        return f'{(number >> 16) & 0xFFFF}.{(number >> 8) & 0xFF}.{number & 0xFF}'
+
+    @staticmethod
+    def _normalize_attribution(value):
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()][:32]
+        if isinstance(value, dict):
+            return [f'{key}: {item}' for key, item in value.items() if str(item).strip()][:32]
+        return []
+
+    def _load_versions(self, title_id):
+        try:
+            payload = self._get_provider_json(
+                'versions', f'{self._base_url}/versions/{{title_id}}.json', title_id,
+            )
+        except Exception:
+            return {}
+        result = {}
+        if isinstance(payload, dict):
+            for version, build_id in payload.items():
+                try:
+                    normalized_build = self.normalize_build_id(build_id)
+                    result[normalized_build] = int(version)
+                except (InvalidCheatIdentifier, TypeError, ValueError):
+                    continue
+        return result
 
     def _active_local_db_dir(self):
         updated = self._update_db_dir
@@ -228,6 +264,7 @@ class CheatService:
 
         merged = {}
         errors = []
+        attributions = []
         for source, directory, template in self._providers:
             try:
                 payload = self._get_provider_json(
@@ -241,6 +278,12 @@ class CheatService:
             if not isinstance(payload, dict):
                 continue
             for raw_build_id, entries in payload.items():
+                if str(raw_build_id).lower() == 'attribution':
+                    for attribution in self._normalize_attribution(entries):
+                        label = f'{source}: {attribution}'
+                        if label not in attributions:
+                            attributions.append(label)
+                    continue
                 try:
                     build_id = self.normalize_build_id(raw_build_id)
                 except InvalidCheatIdentifier:
@@ -270,7 +313,12 @@ class CheatService:
                     })
                     known_hashes.add(content_hash)
 
-        result = {'builds': merged, 'provider_errors': errors}
+        result = {
+            'builds': merged,
+            'versions': self._load_versions(title_id),
+            'attributions': attributions,
+            'provider_errors': errors,
+        }
         with self._lock:
             self._cache[title_id] = (now, result)
         return result
@@ -282,6 +330,9 @@ class CheatService:
         return {
             'title_id': title_id,
             'build_id': build_id,
+            'version': title.get('versions', {}).get(build_id),
+            'version_label': self.format_version(title.get('versions', {}).get(build_id)),
+            'attributions': list(title.get('attributions', [])),
             'match': 'exact' if build_id in title['builds'] else 'none',
             'cheats': list(title['builds'].get(build_id, [])),
             'available_build_ids': sorted(title['builds']),
@@ -299,6 +350,8 @@ class CheatService:
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
             builds.append({
                 'build_id': build_id,
+                'version': title.get('versions', {}).get(build_id),
+                'version_label': self.format_version(title.get('versions', {}).get(build_id)),
                 'cheat_count': len(entries),
                 'tag_counts': tag_counts,
             })
@@ -306,6 +359,7 @@ class CheatService:
             'title_id': title_id,
             'builds': builds,
             'provider_errors': list(title['provider_errors']),
+            'attributions': list(title.get('attributions', [])),
         }
 
     def render(self, title_id, build_id, selected_ids):
@@ -356,6 +410,8 @@ class CheatService:
                     grouped.setdefault(group, []).append(item['name'])
             builds.append({
                 'build_id': build_id,
+                'version': title.get('versions', {}).get(build_id),
+                'version_label': self.format_version(title.get('versions', {}).get(build_id)),
                 'content': content,
                 'sha256': hashlib.sha256(content.encode('utf-8')).hexdigest(),
                 'entry_count': len(entries),
@@ -368,4 +424,5 @@ class CheatService:
             'title_id': title_id,
             'builds': builds,
             'provider_errors': list(title['provider_errors']),
+            'attributions': list(title.get('attributions', [])),
         }

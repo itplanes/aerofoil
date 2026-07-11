@@ -37,6 +37,9 @@ class CheatServiceTests(unittest.TestCase):
         existing = '[60 FPS]\n04000000 00000000 0000003C'
         self.assertEqual(existing, service.ensure_switchable_section('60 FPS', existing))
 
+    def test_formats_internal_game_version(self):
+        self.assertEqual('3.0.1', CheatService.format_version(196609))
+
     def test_list_builds_summarizes_tags(self):
         service = CheatService()
         service._load_title = lambda _title_id: {
