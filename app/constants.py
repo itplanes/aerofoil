@@ -150,7 +150,7 @@ DEFAULT_SETTINGS = {
         "motd": "Welcome to your own shop!",
         "public": False,
         "external_tinfoil_only": False,
-        "encrypt": True,
+        "encrypt": False,
         "tinfoil_only_mode": False,
         "fast_transfer_mode": False,
         "public_key": "",

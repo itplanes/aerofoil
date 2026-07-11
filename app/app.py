@@ -674,28 +674,8 @@ def _respond_with_shop_payload(payload, verified_host=None, cache_kind=None, cac
         response_payload = dict(response_payload)
         response_payload['referrer'] = f"https://{verified_host}"
 
-    # UltraFoil intentionally ships without CyberFoil's private prebuilt/lib.a,
-    # so it cannot decode the legacy Tinfoil encrypted envelope. Authentication
-    # and HTTPS still protect the request; only the response envelope is JSON.
-    if app_settings['shop']['encrypt'] and not _is_ultrafoil_request():
-        public_key = app_settings['shop'].get('public_key')
-        if cache_kind == 'root':
-            encrypted = _get_cached_encrypted_shop_payload(
-                response_payload,
-                public_key=public_key,
-                verified_host=verified_host,
-            )
-        elif cache_kind == 'sections':
-            encrypted = _get_cached_encrypted_shop_sections_payload(
-                response_payload,
-                public_key=public_key,
-                cache_limit=cache_limit,
-                full_catalog=full_catalog,
-            )
-        else:
-            encrypted = encrypt_shop(response_payload, public_key_pem=public_key, compression_level=6)
-        return Response(encrypted, mimetype='application/octet-stream')
-
+    # UltraFoil and AeroFoil use plain JSON. Authentication remains active and
+    # deployments can use HTTPS when transport confidentiality is desired.
     return jsonify(response_payload)
 
 def _is_titledb_unrecognized(info):

@@ -698,7 +698,7 @@
                                 <label class="form-check-label" for="externalTinfoilOnlyCheck">External access: Tinfoil/CyberFoil only</label>
                                 <div id="externalTinfoilOnlyCheckHelp" class="form-text">If enabled, requests from external/public IP addresses are allowed only for Tinfoil/CyberFoil shop clients (detected by the Tinfoil header set and/or matching <code>User-Agent</code>). Private/local network access is unchanged.</div>
                             </div>
-                            <div class="form-check">
+                            <div class="form-check d-none">
                                 <input type="checkbox" class="form-check-input" id="encryptShopCheck"
                                     aria-describedby="encryptShopCheckHelp">
                                 <label class="form-check-label" for="encryptShopCheck">Encrypt shop</label>
@@ -796,7 +796,7 @@
                             <div class="text-muted small">Encryption material and the message shown to clients after loading the shop.</div>
                         </div>
 
-                        <div class="mb-3">
+                        <div class="mb-3 d-none">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <label for="shopPublicKeyInput" class="form-label mb-0">Public Key:</label>
                                 <div class="btn-group" role="group">

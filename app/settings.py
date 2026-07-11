@@ -4,7 +4,6 @@ import os
 import time
 import hashlib
 import threading
-from Crypto.PublicKey import RSA
 
 import logging
 
@@ -508,10 +507,9 @@ def _normalize_shop_settings(raw_shop):
         merged.get('external_tinfoil_only'),
         default=defaults.get('external_tinfoil_only', False),
     )
-    merged['encrypt'] = _coerce_bool(
-        merged.get('encrypt'),
-        default=defaults.get('encrypt', True),
-    )
+    # Retain the key for settings-file compatibility, but AeroFoil's UltraFoil
+    # protocol always serves JSON and never emits the legacy encrypted envelope.
+    merged['encrypt'] = False
     merged['fast_transfer_mode'] = _coerce_bool(
         merged.get('fast_transfer_mode'),
         default=defaults.get('fast_transfer_mode', False),
@@ -526,23 +524,8 @@ def _normalize_shop_settings(raw_shop):
     merged['host'] = str(merged.get('host') or '').strip()
     merged['hauth'] = str(merged.get('hauth') or '').strip()
 
-    if merged['tinfoil_only_mode']:
-        merged['encrypt'] = True
-
     return merged
 
-
-def _validate_shop_public_key(public_key_pem):
-    key_text = str(public_key_pem or '').strip()
-    if not key_text:
-        return True, None
-    try:
-        key = RSA.import_key(key_text)
-    except Exception as exc:
-        return False, f'Invalid public key: {exc}'
-    if getattr(key, 'has_private', lambda: False)():
-        return False, 'Invalid public key: expected a public key, not a private key.'
-    return True, None
 
 def load_keys(key_file=KEYS_FILE):
     try:
@@ -773,15 +756,6 @@ def verify_settings(section, data):
                             'error': 'Conversion staging directory must not be inside a configured library path.'
                         })
                         break
-    elif section == 'shop':
-        normalized = _normalize_shop_settings(data)
-        public_key_ok, public_key_error = _validate_shop_public_key(normalized.get('public_key'))
-        if not public_key_ok:
-            success = False
-            errors.append({
-                'path': 'shop/public_key',
-                'error': public_key_error,
-            })
     return success, errors
 
 def add_library_path_to_settings(path):

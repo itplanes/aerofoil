@@ -58,7 +58,7 @@ class ShopTinfoilPayloadTests(unittest.TestCase):
 
         self.assertEqual(response, 'HTML PAGE')
 
-    def test_index_returns_tinfoil_payload_for_non_browser_in_tinfoil_only_mode(self):
+    def test_index_returns_json_for_non_browser_in_tinfoil_only_mode(self):
         shop_settings = dict(self.base_shop_settings)
         shop_settings['tinfoil_only_mode'] = True
 
@@ -71,10 +71,10 @@ class ShopTinfoilPayloadTests(unittest.TestCase):
                 response = index()
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.mimetype, 'application/octet-stream')
-        self.assertTrue(response.get_data().startswith(b'TINFOIL'))
+        self.assertEqual(response.mimetype, 'application/json')
+        self.assertIn('files', response.get_json())
 
-    def test_shop_sections_returns_tinfoil_payload_when_encryption_enabled(self):
+    def test_shop_sections_returns_json_when_legacy_encryption_setting_is_enabled(self):
         shop_settings = dict(self.base_shop_settings)
         with shop_sections_cache_lock:
             shop_sections_cache.clear()
@@ -99,8 +99,8 @@ class ShopTinfoilPayloadTests(unittest.TestCase):
                 response = shop_sections_api()
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.mimetype, 'application/octet-stream')
-        self.assertTrue(response.get_data().startswith(b'TINFOIL'))
+        self.assertEqual(response.mimetype, 'application/json')
+        self.assertEqual(response.get_json()['sections'][0]['id'], 'all')
 
 
 if __name__ == '__main__':
