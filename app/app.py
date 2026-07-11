@@ -3087,6 +3087,15 @@ def render_cheats_for_build():
     except (InvalidCheatIdentifier, ValueError) as exc:
         return jsonify({'success': False, 'error': str(exc)}), 400
 
+
+@app.get('/api/cheats/titles/<title_id>/bundle')
+@tinfoil_access
+def render_all_cheat_builds(title_id):
+    try:
+        return jsonify(cheat_service.render_all_builds(title_id))
+    except (InvalidCheatIdentifier, ValueError) as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
 def access_shop():
     return render_template(
         'index.html',

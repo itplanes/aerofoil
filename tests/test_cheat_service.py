@@ -43,6 +43,19 @@ class CheatServiceTests(unittest.TestCase):
         self.assertEqual(result['builds'][0]['cheat_count'], 2)
         self.assertEqual(result['builds'][0]['tag_counts']['fps'], 1)
 
+    def test_render_all_builds_reports_conflicts(self):
+        service = CheatService()
+        service._load_title = lambda _title_id: {
+            'builds': {'0123456789ABCDEF': [
+                {'name': '30 FPS', 'content': '[30 FPS]\n1', 'conflict_groups': ['fps']},
+                {'name': '60 FPS', 'content': '[60 FPS]\n2', 'conflict_groups': ['fps']},
+            ]},
+            'provider_errors': [],
+        }
+        result = service.render_all_builds('0100000000000000')
+        self.assertEqual(result['builds'][0]['entry_count'], 2)
+        self.assertEqual(result['builds'][0]['conflicts'][0]['group'], 'fps')
+
     def test_requires_full_title_and_build_ids(self):
         service = CheatService(session=_Session([]))
         with self.assertRaises(InvalidCheatIdentifier):

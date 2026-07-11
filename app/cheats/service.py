@@ -332,3 +332,31 @@ class CheatService:
             ],
             'conflicts': conflicts,
         }
+
+    def render_all_builds(self, title_id):
+        title_id = self.normalize_title_id(title_id)
+        title = self._load_title(title_id)
+        builds = []
+        for build_id, entries in sorted(title['builds'].items()):
+            if not entries:
+                continue
+            content = '\n\n'.join(item['content'].strip() for item in entries).strip() + '\n'
+            grouped = {}
+            for item in entries:
+                for group in item.get('conflict_groups', []):
+                    grouped.setdefault(group, []).append(item['name'])
+            builds.append({
+                'build_id': build_id,
+                'content': content,
+                'sha256': hashlib.sha256(content.encode('utf-8')).hexdigest(),
+                'entry_count': len(entries),
+                'conflicts': [
+                    {'group': group, 'entry_names': names}
+                    for group, names in sorted(grouped.items()) if len(names) > 1
+                ],
+            })
+        return {
+            'title_id': title_id,
+            'builds': builds,
+            'provider_errors': list(title['provider_errors']),
+        }
