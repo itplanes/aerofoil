@@ -23,6 +23,8 @@ RUN mkdir -p /opt/aerofoil-cheatdb \
     && git checkout --detach FETCH_HEAD \
     && rm -rf .git
 ENV AEROFOIL_CHEATS_DB_DIR=/opt/aerofoil-cheatdb
+ENV AEROFOIL_CHEATS_DB_UPDATE_DIR=/app/data/cheatdb
+ENV AEROFOIL_CHEATS_SYNC_INTERVAL_HOURS=12
 ENV AEROFOIL_CHEATS_REMOTE_FALLBACK=true
 
 COPY ./app /app

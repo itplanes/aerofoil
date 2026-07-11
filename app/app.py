@@ -288,6 +288,10 @@ def init():
     def maintenance_job():
         run_library_maintenance()
 
+    def cheats_sync_job():
+        status = cheat_service.sync_database()
+        logger.info("Cheat database synchronized: %s", status)
+
     # Automatic update downloader job
     app.scheduler.add_job(
         job_id='downloads_update_job',
@@ -308,6 +312,16 @@ def init():
         func=maintenance_job,
         interval=timedelta(minutes=maintenance_interval_minutes),
         run_first=True
+    )
+    try:
+        cheat_sync_hours = max(1, min(int(os.getenv('AEROFOIL_CHEATS_SYNC_INTERVAL_HOURS', '12')), 168))
+    except (TypeError, ValueError):
+        cheat_sync_hours = 12
+    app.scheduler.add_job(
+        job_id='cheats_database_sync_job',
+        func=cheats_sync_job,
+        interval=timedelta(hours=cheat_sync_hours),
+        run_first=True,
     )
     
     # Define update_titledb_job
@@ -3038,6 +3052,22 @@ def list_cheat_builds(title_id):
         return jsonify(cheat_service.list_builds(title_id))
     except InvalidCheatIdentifier as exc:
         return jsonify({'success': False, 'error': str(exc)}), 400
+
+
+@app.get('/api/cheats/database/status')
+@access_required('admin')
+def cheat_database_status():
+    return jsonify({'success': True, **cheat_service.get_sync_status()})
+
+
+@app.post('/api/cheats/database/sync')
+@access_required('admin')
+def sync_cheat_database():
+    try:
+        return jsonify({'success': True, **cheat_service.sync_database()})
+    except Exception as exc:
+        logger.warning('Manual cheat database synchronization failed: %s', exc)
+        return jsonify({'success': False, 'error': str(exc)}), 502
 
 
 @app.post('/api/cheats/render')

@@ -4,6 +4,7 @@
 <main class="container py-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div><h2 class="mb-1">金手指管理</h2><div class="text-muted">按游戏、Title ID 和 Build ID 查看可用代码。</div></div>
+        <div class="text-end"><button id="cheatSyncBtn" class="btn btn-outline-primary btn-sm"><i class="bi bi-cloud-download"></i> 立即更新数据库</button><div id="cheatSyncStatus" class="text-muted small mt-1"></div></div>
     </div>
     <div class="card mb-3"><div class="card-body">
         <label class="form-label" for="cheatGameSearch">搜索游戏或输入 Title ID</label>
@@ -32,8 +33,12 @@
     function loadEntries(){ const bid=$('#cheatBuildSelect').val(); if(!bid){ entries=[]; renderEntries(); return; } $.getJSON(`/api/cheats/titles/${selectedTitle.id}/builds/${bid}`).done(data=>{entries=data.cheats||[];renderEntries();}); }
     function renderEntries(){ $('#cheatCount').text(entries.length); $('#cheatEntries').html(entries.length ? entries.map((e,i)=>`<button class="list-group-item list-group-item-action" data-index="${i}"><div class="fw-semibold">${esc(e.name)}</div><div class="mt-1">${badges(e.tags)}</div><small class="text-muted">${esc(e.source)}</small></button>`).join('') : '<div class="p-3 text-muted">此 Build ID 没有可用代码。</div>'); }
     function search(){ const q=$search.val().trim(); if(/^[0-9a-f]{16}$/i.test(q)){selectTitle({id:q.toUpperCase(),name:q.toUpperCase()});return;} if(!q)return; $results.html('<div class="list-group-item">搜索中…</div>'); $.getJSON('/api/titledb/search',{q,limit:30}).done(data=>{$results.html((data.results||[]).map((r,i)=>`<button class="list-group-item list-group-item-action" data-result="${i}"><strong>${esc(r.name)}</strong><br><code>${esc(r.id)}</code></button>`).join('')||'<div class="list-group-item text-muted">没有找到游戏。</div>'); $results.data('items',data.results||[]);}); }
+    function showSyncStatus(data){const when=data.last_updated_at?new Date(data.last_updated_at*1000).toLocaleString():'镜像内置版本';$('#cheatSyncStatus').text(`${data.using_updated_database?'本地同步版本':'内置快照'} · ${when}`);}
+    function loadSyncStatus(){$.getJSON('/api/cheats/database/status').done(showSyncStatus);}
+    $('#cheatSyncBtn').on('click',function(){const btn=$(this);btn.prop('disabled',true).text('正在更新…');$.ajax({url:'/api/cheats/database/sync',method:'POST'}).done(data=>{showSyncStatus(data);if(selectedTitle)loadBuilds();}).fail(xhr=>alert(xhr.responseJSON?.error||'更新失败')).always(()=>btn.prop('disabled',false).html('<i class="bi bi-cloud-download"></i> 立即更新数据库'));});
     $('#cheatSearchBtn').on('click',search); $search.on('keydown',e=>{if(e.key==='Enter')search();}); $results.on('click','[data-result]',function(){selectTitle($results.data('items')[Number($(this).data('result'))]);}); $('#cheatBuildSelect').on('change',loadEntries); $('#cheatEntries').on('click','[data-index]',function(){const e=entries[Number($(this).data('index'))]; $('#cheatEntries .active').removeClass('active');$(this).addClass('active');$('#cheatEntryName').text(e.name);$('#cheatEntryMeta').html(badges(e.tags)+(e.conflict_groups||[]).map(g=>`<span class="badge text-bg-warning me-1">冲突组：${esc(g)}</span>`).join(''));$('#cheatEntryCode').text(e.content);});
     const params=new URLSearchParams(location.search);const initialId=(params.get('title_id')||'').trim().toUpperCase();if(/^[0-9A-F]{16}$/.test(initialId))selectTitle({id:initialId,name:params.get('name')||initialId});
+    loadSyncStatus();
 })();
 </script>
 {% endblock %}

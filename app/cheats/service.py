@@ -2,8 +2,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
+import zipfile
 
 import requests
 
@@ -43,6 +46,11 @@ class CheatService:
             'https://raw.githubusercontent.com/HamletDuFromage/switch-cheats-db/master',
         ).rstrip('/')
         self._local_db_dir = os.getenv('AEROFOIL_CHEATS_DB_DIR', '').strip()
+        self._update_db_dir = os.getenv('AEROFOIL_CHEATS_DB_UPDATE_DIR', '/app/data/cheatdb').strip()
+        self._archive_url = os.getenv(
+            'AEROFOIL_CHEATS_DB_ARCHIVE_URL',
+            'https://github.com/HamletDuFromage/switch-cheats-db/archive/refs/heads/master.zip',
+        ).strip()
         self._remote_fallback = os.getenv('AEROFOIL_CHEATS_REMOTE_FALLBACK', 'true').strip().lower() in (
             '1', 'true', 'yes', 'on',
         )
@@ -53,6 +61,80 @@ class CheatService:
         )
         self._cache = {}
         self._lock = threading.Lock()
+        self._sync_lock = threading.Lock()
+
+    def _active_local_db_dir(self):
+        updated = self._update_db_dir
+        if updated and all(os.path.isdir(os.path.join(updated, name)) for name in ('cheats', 'cheats_gbatemp', 'cheats_gfx')):
+            return updated
+        return self._local_db_dir
+
+    def get_sync_status(self):
+        active = self._active_local_db_dir()
+        metadata = {}
+        metadata_path = os.path.join(self._update_db_dir, '.aerofoil-sync.json') if self._update_db_dir else ''
+        try:
+            with open(metadata_path, 'r', encoding='utf-8') as handle:
+                metadata = json.load(handle)
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+        return {
+            'active_dir': active,
+            'using_updated_database': bool(active and active == self._update_db_dir),
+            'last_updated_at': metadata.get('updated_at'),
+            'archive_url': self._archive_url,
+        }
+
+    def sync_database(self):
+        if not self._update_db_dir or not self._archive_url:
+            raise ValueError('Cheat database synchronization is not configured.')
+        if not self._sync_lock.acquire(blocking=False):
+            raise ValueError('Cheat database synchronization is already running.')
+        work_dir = tempfile.mkdtemp(prefix='aerofoil-cheatdb-')
+        try:
+            archive_path = os.path.join(work_dir, 'database.zip')
+            response = self._session.get(self._archive_url, timeout=(10, 120), stream=True)
+            response.raise_for_status()
+            total = 0
+            with open(archive_path, 'wb') as handle:
+                for chunk in response.iter_content(256 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > 256 * 1024 * 1024:
+                        raise ValueError('Cheat database archive exceeds the size limit.')
+                    handle.write(chunk)
+            extract_dir = os.path.join(work_dir, 'extract')
+            os.makedirs(extract_dir, exist_ok=True)
+            with zipfile.ZipFile(archive_path) as archive:
+                for member in archive.infolist():
+                    target = os.path.abspath(os.path.join(extract_dir, member.filename))
+                    if os.path.commonpath([os.path.abspath(extract_dir), target]) != os.path.abspath(extract_dir):
+                        raise ValueError('Cheat database archive contains an unsafe path.')
+                archive.extractall(extract_dir)
+            roots = [os.path.join(extract_dir, name) for name in os.listdir(extract_dir)]
+            roots = [path for path in roots if os.path.isdir(path)]
+            source = roots[0] if len(roots) == 1 else extract_dir
+            required = ('cheats', 'cheats_gbatemp', 'cheats_gfx')
+            if not all(os.path.isdir(os.path.join(source, name)) for name in required):
+                raise ValueError('Downloaded cheat database is missing required directories.')
+            staging = f'{self._update_db_dir}.new'
+            backup = f'{self._update_db_dir}.old'
+            shutil.rmtree(staging, ignore_errors=True)
+            shutil.copytree(source, staging)
+            with open(os.path.join(staging, '.aerofoil-sync.json'), 'w', encoding='utf-8') as handle:
+                json.dump({'updated_at': int(time.time()), 'archive_url': self._archive_url}, handle)
+            shutil.rmtree(backup, ignore_errors=True)
+            if os.path.exists(self._update_db_dir):
+                os.replace(self._update_db_dir, backup)
+            os.replace(staging, self._update_db_dir)
+            shutil.rmtree(backup, ignore_errors=True)
+            with self._lock:
+                self._cache.clear()
+            return self.get_sync_status()
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            self._sync_lock.release()
 
     @staticmethod
     def normalize_title_id(value):
@@ -113,8 +195,9 @@ class CheatService:
         return response.json() if not raw else json.loads(raw.decode('utf-8'))
 
     def _get_provider_json(self, directory, url, title_id):
-        if self._local_db_dir:
-            path = os.path.join(self._local_db_dir, directory, f'{title_id}.json')
+        local_db_dir = self._active_local_db_dir()
+        if local_db_dir:
+            path = os.path.join(local_db_dir, directory, f'{title_id}.json')
             try:
                 size = os.path.getsize(path)
                 if size > _MAX_PROVIDER_RESPONSE:
