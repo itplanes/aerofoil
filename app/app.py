@@ -674,7 +674,10 @@ def _respond_with_shop_payload(payload, verified_host=None, cache_kind=None, cac
         response_payload = dict(response_payload)
         response_payload['referrer'] = f"https://{verified_host}"
 
-    if app_settings['shop']['encrypt']:
+    # UltraFoil intentionally ships without CyberFoil's private prebuilt/lib.a,
+    # so it cannot decode the legacy Tinfoil encrypted envelope. Authentication
+    # and HTTPS still protect the request; only the response envelope is JSON.
+    if app_settings['shop']['encrypt'] and not _is_ultrafoil_request():
         public_key = app_settings['shop'].get('public_key')
         if cache_kind == 'root':
             encrypted = _get_cached_encrypted_shop_payload(
@@ -2253,6 +2256,11 @@ def _is_cyberfoil_request():
     ua = request.headers.get('User-Agent') or ''
     normalized = ua.lower()
     return 'cyberfoil' in normalized or 'ultrafoil' in normalized
+
+
+def _is_ultrafoil_request():
+    ua = request.headers.get('User-Agent') or ''
+    return 'ultrafoil' in ua.lower()
 
 
 def _is_tinfoil_request():
