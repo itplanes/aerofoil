@@ -2095,12 +2095,14 @@
             ? `${baseTitle} - ${dlcName}`
             : (baseTitle || dlcName);
         $('#detailsTitle').text(title);
-        $('#detailsSubtitle').text(`${game.app_type} | App ID ${game.app_id} | Title ID ${game.title_id}`);
+        const appType = String(game.app_type || '').toUpperCase();
+        const contentTypeLabel = ({ BASE: 'Base game', UPDATE: 'Game update', DLC: 'DLC' })[appType] || (appType || 'Unknown');
+        $('#detailsSubtitle').text(contentTypeLabel);
 
         const dlcList = Array.isArray(game.dlc_list) ? game.dlc_list : [];
         const metaItems = [];
         const statusItems = getLibraryStatusDescriptors(game, {
-            includeBaseStatus: String(game.app_type || '').toUpperCase() === 'DLC',
+            includeBaseStatus: appType === 'DLC',
             includeDlcUpdateStatus: false,
         });
         const genres = splitGenres(getGameGenre(game));
@@ -2110,18 +2112,77 @@
         if (game.size !== undefined) {
             metaItems.push(buildSecondaryMetaBadge(`Size: ${formatBytes(game.size)}`));
         }
-        const metaContainer = $('<div></div>');
+        const metaContainer = $('<div class="d-grid gap-3"></div>');
+        const identitySection = $(
+            '<section class="border rounded p-3" aria-labelledby="detailsIdentityHeading"></section>'
+        );
+        identitySection.append('<h6 id="detailsIdentityHeading" class="mb-2">Content identity</h6>');
+        const identityGrid = $('<div class="row g-2 small"></div>');
+        [
+            ['Content type', contentTypeLabel],
+            ['App ID', game.app_id || 'Unknown'],
+            ['Base Title ID', game.title_id || 'Unknown'],
+            ['Platform compatibility', 'Not provided by metadata'],
+        ].forEach(([label, value]) => {
+            const cell = $('<div class="col-12 col-md-6"></div>');
+            cell.append($('<div class="text-muted"></div>').text(label));
+            cell.append($('<div class="font-monospace text-break"></div>').text(value));
+            identityGrid.append(cell);
+        });
+        identitySection.append(identityGrid);
+        identitySection.append(
+            '<div class="alert alert-secondary small py-2 px-3 mt-3 mb-0">' +
+            '<strong>Important:</strong> “Game Update Current” only compares versions in the configured catalog. ' +
+            'It does not confirm whether an update is for Nintendo Switch, Nintendo Switch 2, or both.' +
+            '</div>'
+        );
+        metaContainer.append(identitySection);
+
+        const statusSection = $('<section class="border rounded p-3" aria-labelledby="detailsStatusHeading"></section>');
+        statusSection.append(
+            $('<h6 id="detailsStatusHeading" class="mb-1"></h6>').text(
+                appType === 'BASE' ? 'Game family status' : 'This content item'
+            )
+        );
+        statusSection.append(
+            $('<div class="text-muted small mb-2"></div>').text(
+                appType === 'BASE'
+                    ? 'Summary for the base game, its known updates, and known DLC.'
+                    : 'Only statuses that apply to this selected item are shown here.'
+            )
+        );
         if (statusItems.length) {
-            const statusWrap = $('<div class="d-flex flex-wrap align-items-center gap-2 mb-2"></div>');
+            const statusWrap = $('<div class="d-flex flex-wrap align-items-center gap-2"></div>');
             statusItems.forEach(status => {
                 statusWrap.append(buildLibraryStatusBadge(status, game));
             });
-            metaContainer.append(statusWrap);
+            statusSection.append(statusWrap);
+        } else {
+            statusSection.append('<div class="text-muted small">No confirmed library status is available.</div>');
         }
+        metaContainer.append(statusSection);
+
         if (metaItems.length) {
+            const metaSection = $('<section class="border rounded p-3" aria-labelledby="detailsMetadataHeading"></section>');
+            metaSection.append('<h6 id="detailsMetadataHeading" class="mb-2">Catalog metadata</h6>');
             const metaWrap = $('<div class="d-flex flex-wrap align-items-center gap-2"></div>');
             metaItems.forEach(item => metaWrap.append(item));
-            metaContainer.append(metaWrap);
+            metaSection.append(metaWrap);
+            metaContainer.append(metaSection);
+        }
+
+        const cheatTitleId = String(game.title_id || game.app_id || '').trim();
+        if (cheatTitleId) {
+            const cheatSection = $('<section class="border rounded p-3" aria-labelledby="detailsCheatHeading"></section>');
+            cheatSection.append('<h6 id="detailsCheatHeading" class="mb-1">Cheat and graphics compatibility</h6>');
+            cheatSection.append(
+                '<div class="text-muted small mb-2">Compatibility requires an exact Build ID match. ' +
+                'The catalog version and “Up to date” status are not sufficient.</div>'
+            );
+            const cheatLink = $('<a class="btn btn-outline-primary btn-sm"><i class="bi bi-controller"></i> Check compatible codes</a>');
+            cheatLink.attr('href', `/cheats?title_id=${encodeURIComponent(cheatTitleId)}`);
+            cheatSection.append(cheatLink);
+            metaContainer.append(cheatSection);
         }
         $('#detailsMeta').empty().append(metaContainer);
 
