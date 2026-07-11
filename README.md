@@ -120,6 +120,20 @@ In CyberFoil, set the AeroFoil eShop URL in Settings:
  - Username: username as created in AeroFoil settings (if the shop is Private)
  - Password: password as created in AeroFoil settings (if the shop is Private)
 
+## UltraFoil cheat service
+
+AeroFoil exposes exact Title ID and Build ID cheat lookup for UltraFoil:
+
+- `GET /api/cheats/titles/<title_id>/builds/<build_id>`
+- `POST /api/cheats/render`
+
+Cheats are merged from the configured structured database sources, normalized, and deduplicated by content hash. UltraFoil only installs exact Build ID matches.
+
+Optional environment variables:
+
+- `AEROFOIL_CHEATS_DB_BASE_URL`: structured cheat database root URL.
+- `AEROFOIL_CHEATS_CACHE_TTL_S`: in-process title cache lifetime in seconds (default `900`).
+
 ## Save backups (Save Sync)
 AeroFoil supports per-user save backup management when the user has the **Backup** flag enabled:
 - Save archives are stored per user under `data/saves/<username>/`.

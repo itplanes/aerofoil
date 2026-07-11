@@ -36,6 +36,7 @@ from app.library import *
 from app.library import _get_nsz_runner, _ensure_unique_path
 from app import titledb
 from app.title_requests import create_title_request, list_requests
+from app.cheats import CheatService, InvalidCheatIdentifier
 import requests
 import re
 import unicodedata
@@ -1854,6 +1855,7 @@ def create_app():
 
 # Create app
 app = create_app()
+cheat_service = CheatService()
 
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -2249,7 +2251,8 @@ def _touch_client():
 
 def _is_cyberfoil_request():
     ua = request.headers.get('User-Agent') or ''
-    return 'cyberfoil' in ua.lower()
+    normalized = ua.lower()
+    return 'cyberfoil' in normalized or 'ultrafoil' in normalized
 
 
 def _is_tinfoil_request():
@@ -3029,6 +3032,33 @@ def frozen_notice_api():
     # Minimal endpoint used to provide a harmless placeholder file
     # for frozen accounts so clients don't reject an empty shop.
     return Response(b' ', mimetype='application/octet-stream')
+
+
+@app.get('/api/cheats/titles/<title_id>/builds/<build_id>')
+@tinfoil_access
+def get_cheats_for_build(title_id, build_id):
+    try:
+        return jsonify(cheat_service.find_build(title_id, build_id))
+    except InvalidCheatIdentifier as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+
+@app.post('/api/cheats/render')
+@tinfoil_access
+def render_cheats_for_build():
+    payload = request.get_json(silent=True) or {}
+    selected_ids = payload.get('selected_ids')
+    if not isinstance(selected_ids, list) or len(selected_ids) > 256:
+        return jsonify({'success': False, 'error': 'selected_ids must be an array with at most 256 entries.'}), 400
+    try:
+        rendered = cheat_service.render(
+            payload.get('title_id'),
+            payload.get('build_id'),
+            [str(value) for value in selected_ids],
+        )
+        return jsonify(rendered)
+    except (InvalidCheatIdentifier, ValueError) as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
 
 def access_shop():
     return render_template(
