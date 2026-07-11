@@ -13,6 +13,20 @@ _BUILD_ID_RE = re.compile(r'^[0-9A-F]{16}$')
 _MAX_PROVIDER_RESPONSE = 8 * 1024 * 1024
 _MAX_CHEAT_CONTENT = 1024 * 1024
 
+_FPS_RE = re.compile(r'(?i)(?:\b(?:30|40|45|50|60|90|120|144)\s*fps\b|\bfps\b|frame\s*rate|framerate)')
+_RESOLUTION_RE = re.compile(r'(?i)(?:resolution|dynamic\s*res|\b(?:360|480|540|720|900|1080|1440|2160)p\b|\b[248]k\b)')
+_GRAPHICS_PATTERNS = (
+    ('shadows', re.compile(r'(?i)shadow')),
+    ('anti_aliasing', re.compile(r'(?i)(?:anti[- ]?alias|\btaa\b|\bfxaa\b)')),
+    ('motion_blur', re.compile(r'(?i)motion\s*blur')),
+    ('depth_of_field', re.compile(r'(?i)(?:depth\s*of\s*field|\bdof\b)')),
+    ('lod', re.compile(r'(?i)(?:\blod\b|level\s*of\s*detail|draw\s*distance)')),
+    ('sharpening', re.compile(r'(?i)sharpen')),
+    ('bloom', re.compile(r'(?i)\bbloom\b')),
+    ('ambient_occlusion', re.compile(r'(?i)(?:ambient\s*occlusion|\bssao\b)')),
+)
+_GENERIC_GRAPHICS_RE = re.compile(r'(?i)(?:graphics?|visual|image\s*quality|quality\s*(?:mod|boost|preset))')
+
 
 class InvalidCheatIdentifier(ValueError):
     pass
@@ -53,6 +67,33 @@ class CheatService:
         if not _BUILD_ID_RE.fullmatch(normalized):
             raise InvalidCheatIdentifier('Build ID must contain exactly 16 hexadecimal characters.')
         return normalized
+
+    @staticmethod
+    def classify(name, content='', source=''):
+        searchable = f'{name or ""}\n{content or ""}'
+        tags = []
+        conflict_groups = []
+        if _FPS_RE.search(searchable):
+            tags.append('fps')
+            conflict_groups.append('fps')
+        if _RESOLUTION_RE.search(searchable):
+            tags.append('resolution')
+            conflict_groups.append('resolution')
+
+        graphics_groups = [key for key, pattern in _GRAPHICS_PATTERNS if pattern.search(searchable)]
+        generic_graphics = _GENERIC_GRAPHICS_RE.search(searchable) is not None
+        if graphics_groups or generic_graphics or (source == 'graphics' and not tags):
+            tags.append('graphics')
+            if graphics_groups:
+                conflict_groups.extend(f'graphics:{key}' for key in graphics_groups)
+            else:
+                conflict_groups.append('graphics:general')
+        if not tags:
+            tags.append('cheat')
+        return {
+            'tags': tags,
+            'conflict_groups': conflict_groups,
+        }
 
     def _get_json(self, url):
         response = self._session.get(
@@ -125,12 +166,15 @@ class CheatService:
                     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
                     if content_hash in known_hashes:
                         continue
+                    classification = self.classify(name, content, source)
                     bucket.append({
                         'id': content_hash,
                         'name': name.strip() or 'Unnamed cheat',
                         'content': content,
                         'content_hash': content_hash,
                         'source': source,
+                        'tags': classification['tags'],
+                        'conflict_groups': classification['conflict_groups'],
                     })
                     known_hashes.add(content_hash)
 
@@ -159,10 +203,29 @@ class CheatService:
         if not entries:
             raise ValueError('No valid cheats were selected for this build.')
         content = '\n\n'.join(item['content'].strip() for item in entries).strip() + '\n'
+        grouped = {}
+        for item in entries:
+            for group in item.get('conflict_groups', []):
+                grouped.setdefault(group, []).append(item['id'])
+        conflicts = [
+            {'group': group, 'entry_ids': ids}
+            for group, ids in sorted(grouped.items())
+            if len(ids) > 1
+        ]
         return {
             'title_id': result['title_id'],
             'build_id': result['build_id'],
             'content': content,
             'sha256': hashlib.sha256(content.encode('utf-8')).hexdigest(),
-            'selected': [{'id': item['id'], 'name': item['name'], 'source': item['source']} for item in entries],
+            'selected': [
+                {
+                    'id': item['id'],
+                    'name': item['name'],
+                    'source': item['source'],
+                    'tags': item.get('tags', []),
+                    'conflict_groups': item.get('conflict_groups', []),
+                }
+                for item in entries
+            ],
+            'conflicts': conflicts,
         }

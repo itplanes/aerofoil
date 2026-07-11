@@ -129,6 +129,8 @@ AeroFoil exposes exact Title ID and Build ID cheat lookup for UltraFoil:
 
 Cheats are merged from the configured structured database sources, normalized, and deduplicated by content hash. UltraFoil only installs exact Build ID matches.
 
+Each returned entry includes normalized tags (`fps`, `resolution`, `graphics`, or `cheat`) and conflict groups. Graphics conflict groups distinguish settings such as shadows, anti-aliasing, motion blur, depth of field, LOD, sharpening, bloom, and ambient occlusion. Clients should warn before enabling or replacing entries in the same conflict group.
+
 Optional environment variables:
 
 - `AEROFOIL_CHEATS_DB_BASE_URL`: structured cheat database root URL.

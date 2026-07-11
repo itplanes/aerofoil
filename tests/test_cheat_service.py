@@ -84,6 +84,36 @@ class CheatServiceTests(unittest.TestCase):
                 os.environ['AEROFOIL_CHEATS_REMOTE_FALLBACK'] = previous_fallback
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_classifies_fps_resolution_and_graphics_names(self):
+        service = CheatService(session=_Session([]))
+        fps = service.classify('60 FPS Unlock')
+        resolution = service.classify('Dynamic Resolution 1080p')
+        graphics = service.classify('Disable Motion Blur and improve shadows')
+        self.assertEqual(['fps'], fps['tags'])
+        self.assertEqual(['fps'], fps['conflict_groups'])
+        self.assertEqual(['resolution'], resolution['tags'])
+        self.assertIn('resolution', resolution['conflict_groups'])
+        self.assertEqual(['graphics'], graphics['tags'])
+        self.assertIn('graphics:motion_blur', graphics['conflict_groups'])
+        self.assertIn('graphics:shadows', graphics['conflict_groups'])
+
+    def test_render_reports_mutually_exclusive_selections(self):
+        payload = {
+            'ABCDEF0123456789': {
+                '30 FPS': '[30 FPS]\n04000000 00000000 0000001E',
+                '60 FPS': '[60 FPS]\n04000000 00000000 0000003C',
+            }
+        }
+        service = CheatService(session=_Session([payload, {}, {}]), cache_ttl_s=60)
+        found = service.find_build('0100123412341234', 'ABCDEF0123456789')
+        rendered = service.render(
+            found['title_id'],
+            found['build_id'],
+            [item['id'] for item in found['cheats']],
+        )
+        self.assertEqual('fps', rendered['conflicts'][0]['group'])
+        self.assertEqual(2, len(rendered['conflicts'][0]['entry_ids']))
+
 
 if __name__ == '__main__':
     unittest.main()
