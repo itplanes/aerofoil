@@ -1064,11 +1064,33 @@ def generate_library():
             generated_items=len(games_info),
         )
 
-def _sanitize_component(value, fallback='Unknown'):
+def _truncate_utf8(value, max_bytes, suffix=''):
+    value = str(value or '')
+    suffix = str(suffix or '')
+    budget = max(1, int(max_bytes) - len(suffix.encode('utf-8')))
+    encoded = value.encode('utf-8')
+    if len(encoded) <= budget:
+        return value + suffix
+    encoded = encoded[:budget]
+    while encoded:
+        try:
+            return encoded.decode('utf-8').rstrip('. ') + suffix
+        except UnicodeDecodeError:
+            encoded = encoded[:-1]
+    return suffix.lstrip()
+
+
+def _sanitize_component(value, fallback='Unknown', max_bytes=240):
     value = str(value or '').strip()
     value = re.sub(r'[<>:"/\\\\|?*]', '', value)
     value = value.rstrip('. ')
-    return value if value else fallback
+    value = value if value else fallback
+    suffix = ''
+    match = re.search(r'(\.[A-Za-z0-9]{1,8})$', value)
+    if match:
+        suffix = match.group(1)
+        value = value[:-len(suffix)]
+    return _truncate_utf8(value, max_bytes=max_bytes, suffix=suffix)
 
 def _sanitize_relative_path(path_value, fallback='Other'):
     raw = str(path_value or '').strip().replace('\\', '/')
@@ -1547,13 +1569,13 @@ def _build_destination(library_path, file_entry, app, title_name, dlc_name, acti
     if active_template is None:
         active_template = _get_active_template()
     title_id = app.title.title_id if app.title else None
-    safe_title = _sanitize_component(title_name or title_id or app.app_id)
+    safe_title = _sanitize_component(title_name or title_id or app.app_id, max_bytes=100)
     safe_title_id = _sanitize_component(title_id or app.app_id)
     version = app.app_version or '0'
     extension = file_entry.extension or os.path.splitext(file_entry.filename or '')[1].lstrip('.')
     safe_ext = _sanitize_component(extension, fallback='nsp')
     safe_app_id = _sanitize_component(app.app_id or safe_title_id)
-    safe_dlc_name = _sanitize_component(dlc_name or app.app_id)
+    safe_dlc_name = _sanitize_component(dlc_name or app.app_id, max_bytes=80)
     version_txt = None
     app_id_for_lookup = str(app.app_id or '').strip()
     if app_id_for_lookup:

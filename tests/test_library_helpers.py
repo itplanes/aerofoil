@@ -117,6 +117,9 @@ class LibraryHelperTests(unittest.TestCase):
     def test_sanitize_component(self):
         self.assertEqual(_sanitize_component('Game: Name?'), 'Game Name')
         self.assertEqual(_sanitize_component(''), 'Unknown')
+        shortened = _sanitize_component(('文明帝国' * 100) + '.nsp')
+        self.assertLessEqual(len(shortened.encode('utf-8')), 240)
+        self.assertTrue(shortened.endswith('.nsp'))
 
     def test_format_nsz_command_threads(self):
         command = _format_nsz_command(
