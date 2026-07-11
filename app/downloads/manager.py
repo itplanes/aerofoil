@@ -18,7 +18,7 @@ from app.downloads.client import (
     remove_active_download,
     remove_completed_download,
 )
-from app.downloads.prowlarr import ProwlarrClient, filter_results, pick_best_result
+from app.downloads.prowlarr import ProwlarrClient, analyze_result_match, filter_results, pick_best_result
 from app.library import _ensure_unique_path, _sanitize_component, enqueue_cleanup_roots, enqueue_organize_paths
 from app.settings import load_settings
 from app.utils import get_supported_content_extension, is_supported_content_path, is_wrapped_content_path
@@ -761,6 +761,11 @@ def search_update_options(title_id, version, limit=20):
             "age_minutes": r.get("age_minutes"),
             "age_label": r.get("age_label"),
             "published_at": r.get("published_at"),
+            "match": analyze_result_match(
+                r,
+                title_id=update["title_id"],
+                version=update["version"],
+            ),
         }
         for r in sort_download_search_results(results)[:limit]
     ]
@@ -776,6 +781,14 @@ def queue_download_url(download_url, expected_name=None, update_only=False, expe
     client_cfg = _get_protocol_client_cfg(downloads, resolved_protocol)
     if not _is_protocol_client_configured(downloads, resolved_protocol):
         return False, f"No {resolved_protocol} client is configured."
+    tracked_title_id = str(title_id or "").strip().upper()
+    try:
+        tracked_version = int(expected_version) if expected_version is not None else None
+    except (TypeError, ValueError):
+        tracked_version = None
+    tracking_key = f"{tracked_title_id}:{tracked_version}" if tracked_title_id and tracked_version is not None else None
+    if tracking_key and _already_tracked(tracking_key):
+        return False, "This title version is already queued or completed."
     queue_update_only = bool(update_only and resolved_protocol != "usenet")
     ok, message, item_id = queue_download(
         resolved_protocol,
@@ -787,15 +800,8 @@ def queue_download_url(download_url, expected_name=None, update_only=False, expe
         expected_version=expected_version,
     )
     if ok:
-        tracked_title_id = None
-        tracked_version = None
-        if update_only and title_id and expected_version is not None:
-            try:
-                tracked_version = int(expected_version)
-            except (TypeError, ValueError):
-                tracked_version = None
-            tracked_title_id = str(title_id).strip().upper() or None
-        key = f"manual:{int(time.time())}"
+        tracked_title_id = tracked_title_id or None
+        key = tracking_key or f"manual:{int(time.time())}"
         update = {
             "title_id": tracked_title_id,
             "title_name": expected_name or tracked_title_id or "Manual download",

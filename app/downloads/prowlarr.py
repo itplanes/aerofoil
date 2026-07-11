@@ -204,6 +204,58 @@ def _extract_internal_version_token(text):
         return None
 
 
+def _normalize_title_id(value):
+    text = re.sub(r"[^0-9a-f]", "", str(value or "").lower())
+    return text if len(text) == 16 else ""
+
+
+def _extract_title_ids(text):
+    return {
+        match.lower()
+        for match in re.findall(r"(?<![0-9a-f])[0-9a-f]{16}(?![0-9a-f])", str(text or ""), re.IGNORECASE)
+    }
+
+
+def _same_title_family(left, right):
+    left_id = _normalize_title_id(left)
+    right_id = _normalize_title_id(right)
+    # Base, update and DLC IDs share their first 13 hexadecimal digits.
+    return bool(left_id and right_id and left_id[:13] == right_id[:13])
+
+
+def analyze_result_match(result, title_id=None, version=None):
+    raw_title = str(result.get("title") or "")
+    found_ids = _extract_title_ids(raw_title)
+    expected_id = _normalize_title_id(title_id)
+    version_token = _extract_internal_version_token(raw_title)
+    reasons = []
+
+    if expected_id and found_ids:
+        if any(_same_title_family(item, expected_id) for item in found_ids):
+            reasons.append("title_id_family_match")
+        else:
+            return {"eligible": False, "confidence": "rejected", "reasons": ["unrelated_title_id"]}
+
+    try:
+        expected_version = int(version) if version is not None else None
+    except (TypeError, ValueError):
+        expected_version = None
+
+    if expected_version is not None and version_token is not None:
+        if version_token == expected_version:
+            reasons.append("exact_version")
+        else:
+            reasons.append("different_version")
+
+    score = _score_result(result, title_id=title_id, version=version)
+    if "title_id_family_match" in reasons:
+        score += 40
+    if "different_version" in reasons:
+        score -= 35
+    confidence = "high" if score >= 75 else "medium" if score >= 35 else "low"
+    return {"eligible": True, "confidence": confidence, "score": round(score, 2), "reasons": reasons}
+
+
 def filter_results(results, min_seeders=0, min_age_minutes=0, required_terms=None, blacklist_terms=None):
     required_terms = [_normalize_text(t) for t in (required_terms or []) if t]
     blacklist_terms = [_normalize_text(t) for t in (blacklist_terms or []) if t]
@@ -263,6 +315,10 @@ def pick_best_result(results, title_id=None, version=None, min_seeders=0, min_ag
     allowed = {str(item or "").strip().lower() for item in (allowed_protocols or []) if str(item or "").strip()}
     if allowed:
         filtered = [item for item in filtered if str(item.get("protocol") or "").strip().lower() in allowed]
+    filtered = [
+        item for item in filtered
+        if analyze_result_match(item, title_id=title_id, version=version).get("eligible")
+    ]
     if require_exact_version and version is not None:
         expected_version = int(version)
         filtered = [
@@ -272,7 +328,7 @@ def pick_best_result(results, title_id=None, version=None, min_seeders=0, min_ag
     if not filtered:
         return None
     scored = [
-        (result, _score_result(result, title_id=title_id, version=version))
+        (result, analyze_result_match(result, title_id=title_id, version=version).get("score", 0))
         for result in filtered
     ]
     scored.sort(

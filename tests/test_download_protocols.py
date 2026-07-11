@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.downloads.manager import _extract_update_version_from_name, _get_import_extension, _infer_protocol
-from app.downloads.prowlarr import ProwlarrClient, _normalize_result, filter_results, pick_best_result
+from app.downloads.prowlarr import ProwlarrClient, _normalize_result, analyze_result_match, filter_results, pick_best_result
 from app.settings import _normalize_download_settings
 
 
@@ -40,6 +40,24 @@ class DownloadProtocolTests(unittest.TestCase):
         ]
         best = pick_best_result(results, allowed_protocols=["usenet"])
         self.assertEqual(best["protocol"], "usenet")
+
+    def test_pick_best_result_rejects_unrelated_explicit_title_id(self):
+        results = [
+            {"title": "Wanted Game [0100AAAA00000800] [v65536]", "seeders": 2, "size": 1, "protocol": "torrent"},
+            {"title": "Wrong Game [0100BBBB00000800] [v65536]", "seeders": 200, "size": 1, "protocol": "torrent"},
+        ]
+        best = pick_best_result(results, title_id="0100AAAA00000000", version=65536)
+        self.assertIn("0100AAAA", best["title"])
+
+    def test_result_analysis_accepts_related_update_title_id(self):
+        analysis = analyze_result_match(
+            {"title": "Game [0100AAAA00000800] [v65536]", "seeders": 1, "protocol": "torrent"},
+            title_id="0100AAAA00000000",
+            version=65536,
+        )
+        self.assertTrue(analysis["eligible"])
+        self.assertEqual(analysis["confidence"], "high")
+        self.assertIn("title_id_family_match", analysis["reasons"])
 
     def test_pick_best_result_requires_exact_version_for_usenet_when_enabled(self):
         results = [
