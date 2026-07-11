@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import unittest
 
 from app.cheats import CheatService, InvalidCheatIdentifier
@@ -52,6 +54,35 @@ class CheatServiceTests(unittest.TestCase):
         )
         self.assertTrue(rendered['content'].startswith('[Example]'))
         self.assertEqual(64, len(rendered['sha256']))
+
+    def test_prefers_bundled_database_without_network(self):
+        root = os.path.join('.tmp', 'test-cheatdb')
+        shutil.rmtree(root, ignore_errors=True)
+        os.makedirs(os.path.join(root, 'cheats'), exist_ok=True)
+        title_id = '0100123412341234'
+        build_id = 'ABCDEF0123456789'
+        with open(os.path.join(root, 'cheats', f'{title_id}.json'), 'w', encoding='utf-8') as handle:
+            json.dump({build_id: {'Bundled': '[Bundled]\n04000000 00000000 00000001'}}, handle)
+
+        previous_dir = os.environ.get('AEROFOIL_CHEATS_DB_DIR')
+        previous_fallback = os.environ.get('AEROFOIL_CHEATS_REMOTE_FALLBACK')
+        os.environ['AEROFOIL_CHEATS_DB_DIR'] = root
+        os.environ['AEROFOIL_CHEATS_REMOTE_FALLBACK'] = 'false'
+        try:
+            service = CheatService(session=_Session([]), cache_ttl_s=60)
+            result = service.find_build(title_id, build_id)
+            self.assertEqual('exact', result['match'])
+            self.assertEqual('Bundled', result['cheats'][0]['name'])
+        finally:
+            if previous_dir is None:
+                os.environ.pop('AEROFOIL_CHEATS_DB_DIR', None)
+            else:
+                os.environ['AEROFOIL_CHEATS_DB_DIR'] = previous_dir
+            if previous_fallback is None:
+                os.environ.pop('AEROFOIL_CHEATS_REMOTE_FALLBACK', None)
+            else:
+                os.environ['AEROFOIL_CHEATS_REMOTE_FALLBACK'] = previous_fallback
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == '__main__':

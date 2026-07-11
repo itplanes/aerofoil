@@ -12,6 +12,19 @@ RUN apk update && apk add --no-cache bash sudo \
 
 RUN mkdir /app
 
+# Bundle a reproducible cheat database snapshot. Runtime queries use these
+# local JSON files first and only contact the upstream source as a fallback.
+ARG AEROFOIL_CHEATS_DB_REF=911426953758ea83569de183b8f65b6fa76ea901
+RUN mkdir -p /opt/aerofoil-cheatdb \
+    && cd /opt/aerofoil-cheatdb \
+    && git init \
+    && git remote add origin https://github.com/HamletDuFromage/switch-cheats-db.git \
+    && git fetch --depth 1 origin "${AEROFOIL_CHEATS_DB_REF}" \
+    && git checkout --detach FETCH_HEAD \
+    && rm -rf .git
+ENV AEROFOIL_CHEATS_DB_DIR=/opt/aerofoil-cheatdb
+ENV AEROFOIL_CHEATS_REMOTE_FALLBACK=true
+
 COPY ./app /app
 COPY ./docker/run.sh /app/run.sh
 
@@ -31,4 +44,3 @@ RUN mkdir -p /app/data
 WORKDIR /app
 
 ENTRYPOINT [ "/app/run.sh" ]
-

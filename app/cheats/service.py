@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import threading
@@ -27,10 +28,14 @@ class CheatService:
             'AEROFOIL_CHEATS_DB_BASE_URL',
             'https://raw.githubusercontent.com/HamletDuFromage/switch-cheats-db/master',
         ).rstrip('/')
+        self._local_db_dir = os.getenv('AEROFOIL_CHEATS_DB_DIR', '').strip()
+        self._remote_fallback = os.getenv('AEROFOIL_CHEATS_REMOTE_FALLBACK', 'true').strip().lower() in (
+            '1', 'true', 'yes', 'on',
+        )
         self._providers = (
-            ('community', f'{base}/cheats_gbatemp/{{title_id}}.json'),
-            ('database', f'{base}/cheats/{{title_id}}.json'),
-            ('graphics', f'{base}/cheats_gfx/{{title_id}}.json'),
+            ('community', 'cheats_gbatemp', f'{base}/cheats_gbatemp/{{title_id}}.json'),
+            ('database', 'cheats', f'{base}/cheats/{{title_id}}.json'),
+            ('graphics', 'cheats_gfx', f'{base}/cheats_gfx/{{title_id}}.json'),
         )
         self._cache = {}
         self._lock = threading.Lock()
@@ -64,7 +69,22 @@ class CheatService:
             raw.extend(chunk)
             if len(raw) > _MAX_PROVIDER_RESPONSE:
                 raise ValueError('Cheat provider response exceeds the size limit.')
-        return response.json() if not raw else __import__('json').loads(raw.decode('utf-8'))
+        return response.json() if not raw else json.loads(raw.decode('utf-8'))
+
+    def _get_provider_json(self, directory, url, title_id):
+        if self._local_db_dir:
+            path = os.path.join(self._local_db_dir, directory, f'{title_id}.json')
+            try:
+                size = os.path.getsize(path)
+                if size > _MAX_PROVIDER_RESPONSE:
+                    raise ValueError('Bundled cheat provider file exceeds the size limit.')
+                with open(path, 'r', encoding='utf-8') as handle:
+                    return json.load(handle)
+            except FileNotFoundError:
+                pass
+        if not self._remote_fallback:
+            return {}
+        return self._get_json(url)
 
     def _load_title(self, title_id):
         now = time.monotonic()
@@ -75,9 +95,13 @@ class CheatService:
 
         merged = {}
         errors = []
-        for source, template in self._providers:
+        for source, directory, template in self._providers:
             try:
-                payload = self._get_json(template.format(title_id=title_id))
+                payload = self._get_provider_json(
+                    directory,
+                    template.format(title_id=title_id),
+                    title_id,
+                )
             except Exception as exc:
                 errors.append(f'{source}: {exc}')
                 continue

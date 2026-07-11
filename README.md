@@ -133,6 +133,12 @@ Optional environment variables:
 
 - `AEROFOIL_CHEATS_DB_BASE_URL`: structured cheat database root URL.
 - `AEROFOIL_CHEATS_CACHE_TTL_S`: in-process title cache lifetime in seconds (default `900`).
+- `AEROFOIL_CHEATS_DB_DIR`: local structured database directory. Official Docker images set this to the bundled snapshot at `/opt/aerofoil-cheatdb`.
+- `AEROFOIL_CHEATS_REMOTE_FALLBACK`: use the online source when a title is absent locally (default `true`).
+
+The Docker image pins its bundled snapshot to a specific `HamletDuFromage/switch-cheats-db` commit for reproducible builds. That upstream database currently mirrors the main GBAtemp archive and `NX-60FPS-RES-GFX-Cheats`; AeroFoil therefore does not need to clone the graphics repository separately. Bump `AEROFOIL_CHEATS_DB_REF` when publishing a refreshed image.
+
+The upstream database credits cheat-code authors but does not currently publish an explicit repository license. Review redistribution requirements before publishing images outside personal use.
 
 ## Save backups (Save Sync)
 AeroFoil supports per-user save backup management when the user has the **Backup** flag enabled:
