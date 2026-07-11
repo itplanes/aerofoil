@@ -339,6 +339,7 @@ def _build_pending_queue_item(key, info, snapshot):
         ),
         "state": state,
         "state_reason": state_reason,
+        "detected_identity": info.get("detected_identity"),
         "deletable": True,
     }
 
@@ -1251,6 +1252,49 @@ def _resolve_completed_update_info(info, completed_item):
     return merged
 
 
+def _normalize_content_title_id(value):
+    normalized = re.sub(r"[^0-9A-F]", "", str(value or "").upper())
+    return normalized if len(normalized) == 16 else ""
+
+
+def _same_content_title_family(left, right):
+    left_id = _normalize_content_title_id(left)
+    right_id = _normalize_content_title_id(right)
+    return bool(left_id and right_id and left_id[:13] == right_id[:13])
+
+
+def _validate_completed_identity(expected, completed_item):
+    """Validate strong metadata before importing a tracked download.
+
+    Identification failures remain retryable/compatible, while explicit identity
+    contradictions are blocked so a different game cannot enter the library.
+    """
+    expected = expected or {}
+    actual = _infer_content_info_from_completed_item(completed_item)
+    if not actual:
+        return True, None, None
+
+    expected_title_id = _normalize_content_title_id(expected.get("title_id"))
+    actual_title_id = _normalize_content_title_id(actual.get("title_id"))
+    if expected_title_id and actual_title_id and not _same_content_title_family(expected_title_id, actual_title_id):
+        return False, f"identity mismatch: expected {expected_title_id}, found {actual_title_id}", actual
+
+    expected_type = str(expected.get("app_type") or "").strip().upper()
+    actual_type = str(actual.get("app_type") or "").strip().upper()
+    if expected_type and actual_type and expected_type != actual_type:
+        return False, f"content type mismatch: expected {expected_type}, found {actual_type}", actual
+
+    try:
+        expected_version = int(expected.get("version")) if expected.get("version") is not None else None
+        actual_version = int(actual.get("version")) if actual.get("version") is not None else None
+    except (TypeError, ValueError):
+        expected_version = actual_version = None
+    if expected_version is not None and actual_version is not None and actual_version < expected_version:
+        return False, f"version mismatch: expected at least v{expected_version}, found v{actual_version}", actual
+
+    return True, None, actual
+
+
 def _normalize_match_text(text):
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
 
@@ -1440,6 +1484,12 @@ def _process_tracked_completed_item_locked(key, info, bucket):
     matched_id = match.get("id") or match.get("hash")
     if matched_id:
         bucket["matched_ids"].add(matched_id)
+    identity_ok, identity_reason, actual_identity = _validate_completed_identity(info, match)
+    if not identity_ok:
+        logger.warning("Blocked completed download for pending key %s: %s", key, identity_reason)
+        info["detected_identity"] = actual_identity
+        _set_pending_stuck(info, identity_reason, live_item=match)
+        return []
     move_info = _resolve_completed_update_info(info, match)
     moved_result, move_reason = _move_completed_with_reason(match, move_info)
     moved_match_paths = _coerce_moved_paths(moved_result)

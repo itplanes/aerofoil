@@ -17,6 +17,7 @@ from app.downloads.manager import (
     _iter_importable_download_files,
     _move_completed_with_reason,
     _normalize_imported_wrapped_files,
+    _validate_completed_identity,
     _search_and_queue,
     filter_download_search_results,
     get_download_ui_visibility,
@@ -41,6 +42,32 @@ def _normalize_fixture_path(value):
 
 
 class ProwlarrProtocolTests(unittest.TestCase):
+    @patch("app.downloads.manager._infer_content_info_from_completed_item")
+    def test_completed_identity_blocks_another_title(self, infer_mock):
+        infer_mock.return_value = {
+            "title_id": "0100BBBB00000000", "app_type": "UPDATE", "version": 65536,
+        }
+        ok, reason, actual = _validate_completed_identity(
+            {"title_id": "0100AAAA00000000", "app_type": "UPDATE", "version": 65536},
+            {"path": "/downloads/example"},
+        )
+        self.assertFalse(ok)
+        self.assertIn("identity mismatch", reason)
+        self.assertEqual(actual["title_id"], "0100BBBB00000000")
+
+    @patch("app.downloads.manager._infer_content_info_from_completed_item")
+    def test_completed_identity_accepts_related_newer_update(self, infer_mock):
+        infer_mock.return_value = {
+            "title_id": "0100AAAA00000000", "app_id": "0100AAAA00000800",
+            "app_type": "UPDATE", "version": 131072,
+        }
+        ok, reason, _ = _validate_completed_identity(
+            {"title_id": "0100AAAA00000000", "app_type": "UPDATE", "version": 65536},
+            {"path": "/downloads/example"},
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+
     def test_normalize_result_detects_torrent_protocol_from_magnet(self):
         result = _normalize_result({
             "title": "Example Torrent",
