@@ -28,6 +28,21 @@ class _Session:
 
 
 class CheatServiceTests(unittest.TestCase):
+    def test_list_builds_summarizes_tags(self):
+        service = CheatService()
+        service._load_title = lambda _title_id: {
+            'builds': {
+                '0123456789ABCDEF': [
+                    {'tags': ['fps', 'graphics']},
+                    {'tags': ['cheat']},
+                ],
+            },
+            'provider_errors': [],
+        }
+        result = service.list_builds('0100000000000000')
+        self.assertEqual(result['builds'][0]['cheat_count'], 2)
+        self.assertEqual(result['builds'][0]['tag_counts']['fps'], 1)
+
     def test_requires_full_title_and_build_ids(self):
         service = CheatService(session=_Session([]))
         with self.assertRaises(InvalidCheatIdentifier):

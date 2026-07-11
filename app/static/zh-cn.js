@@ -3,7 +3,7 @@
 
     const exact = new Map(Object.entries({
         'Library': '游戏库', 'Requests': '请求', 'Request': '请求', 'Content': '内容',
-        'Downloads': '下载', 'Upload': '上传', 'Manage': '管理', 'Backups': '备份',
+        'Downloads': '下载', 'Upload': '上传', 'Cheats': '金手指', 'Manage': '管理', 'Backups': '备份',
         'Save Data Backups': '存档备份', 'Admin': '管理', 'Users': '用户',
         'Activity': '活动记录', 'Settings': '设置', 'Login': '登录', 'Logout': '退出登录',
         'Username': '用户名', 'Password': '密码', 'Remember me': '记住我', 'User': '用户',

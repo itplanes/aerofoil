@@ -196,6 +196,26 @@ class CheatService:
             'provider_errors': list(title['provider_errors']),
         }
 
+    def list_builds(self, title_id):
+        title_id = self.normalize_title_id(title_id)
+        title = self._load_title(title_id)
+        builds = []
+        for build_id, entries in sorted(title['builds'].items()):
+            tag_counts = {}
+            for entry in entries:
+                for tag in entry.get('tags', []):
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+            builds.append({
+                'build_id': build_id,
+                'cheat_count': len(entries),
+                'tag_counts': tag_counts,
+            })
+        return {
+            'title_id': title_id,
+            'builds': builds,
+            'provider_errors': list(title['provider_errors']),
+        }
+
     def render(self, title_id, build_id, selected_ids):
         result = self.find_build(title_id, build_id)
         selected = set(selected_ids or [])

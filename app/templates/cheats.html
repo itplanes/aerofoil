@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+{% include 'nav.html' %}
+<main class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div><h2 class="mb-1">金手指管理</h2><div class="text-muted">按游戏、Title ID 和 Build ID 查看可用代码。</div></div>
+    </div>
+    <div class="card mb-3"><div class="card-body">
+        <label class="form-label" for="cheatGameSearch">搜索游戏或输入 Title ID</label>
+        <div class="input-group"><input id="cheatGameSearch" class="form-control" autocomplete="off" placeholder="游戏名称或 16 位 Title ID"><button id="cheatSearchBtn" class="btn btn-primary">搜索</button></div>
+        <div id="cheatSearchResults" class="list-group mt-2"></div>
+    </div></div>
+    <div id="cheatBrowser" class="d-none">
+        <div class="card mb-3"><div class="card-body">
+            <div class="d-flex align-items-center gap-3"><img id="cheatGameIcon" width="64" height="64" class="rounded d-none" alt=""><div><h4 id="cheatGameName" class="mb-1"></h4><code id="cheatTitleId"></code></div></div>
+            <hr><label class="form-label" for="cheatBuildSelect">Build ID（必须与游戏版本完全匹配）</label><select id="cheatBuildSelect" class="form-select"></select>
+            <div id="cheatProviderErrors" class="alert alert-warning mt-3 d-none"></div>
+        </div></div>
+        <div class="row g-3"><div class="col-lg-5"><div class="card"><div class="card-header">代码列表 <span id="cheatCount" class="badge text-bg-secondary"></span></div><div id="cheatEntries" class="list-group list-group-flush"></div></div></div>
+        <div class="col-lg-7"><div class="card"><div class="card-header">代码预览</div><div class="card-body"><h5 id="cheatEntryName" class="text-muted">请选择一项代码</h5><div id="cheatEntryMeta" class="mb-2"></div><pre id="cheatEntryCode" class="bg-black rounded p-3 overflow-auto" style="min-height:360px;white-space:pre-wrap"></pre></div></div></div></div>
+    </div>
+</main>
+<script>
+(() => {
+    const $search = $('#cheatGameSearch'), $results = $('#cheatSearchResults');
+    let selectedTitle = null, entries = [];
+    const tagNames = {fps:'FPS', resolution:'分辨率', graphics:'画质', cheat:'普通金手指'};
+    function esc(v){ return $('<div>').text(String(v || '')).html(); }
+    function badges(tags){ return (tags || []).map(t => `<span class="badge text-bg-info me-1">${esc(tagNames[t] || t)}</span>`).join(''); }
+    function selectTitle(item){ selectedTitle=item; $results.empty(); $search.val(`${item.name || item.id} [${item.id}]`); $('#cheatBrowser').removeClass('d-none'); $('#cheatGameName').text(item.name || item.id); $('#cheatTitleId').text(item.id); if(item.iconUrl) $('#cheatGameIcon').attr('src',item.iconUrl).removeClass('d-none'); else $('#cheatGameIcon').addClass('d-none'); loadBuilds(); }
+    function loadBuilds(){ $('#cheatBuildSelect').html('<option>加载中…</option>'); $.getJSON(`/api/cheats/titles/${selectedTitle.id}`).done(data => { const builds=data.builds||[]; $('#cheatBuildSelect').html(builds.length ? builds.map(b=>`<option value="${b.build_id}">${b.build_id}（${b.cheat_count} 项）</option>`).join('') : '<option value="">没有找到金手指</option>'); const errors=data.provider_errors||[]; $('#cheatProviderErrors').toggleClass('d-none',!errors.length).text(errors.join('\n')); loadEntries(); }).fail(xhr=>alert(xhr.responseJSON?.error || '加载失败')); }
+    function loadEntries(){ const bid=$('#cheatBuildSelect').val(); if(!bid){ entries=[]; renderEntries(); return; } $.getJSON(`/api/cheats/titles/${selectedTitle.id}/builds/${bid}`).done(data=>{entries=data.cheats||[];renderEntries();}); }
+    function renderEntries(){ $('#cheatCount').text(entries.length); $('#cheatEntries').html(entries.length ? entries.map((e,i)=>`<button class="list-group-item list-group-item-action" data-index="${i}"><div class="fw-semibold">${esc(e.name)}</div><div class="mt-1">${badges(e.tags)}</div><small class="text-muted">${esc(e.source)}</small></button>`).join('') : '<div class="p-3 text-muted">此 Build ID 没有可用代码。</div>'); }
+    function search(){ const q=$search.val().trim(); if(/^[0-9a-f]{16}$/i.test(q)){selectTitle({id:q.toUpperCase(),name:q.toUpperCase()});return;} if(!q)return; $results.html('<div class="list-group-item">搜索中…</div>'); $.getJSON('/api/titledb/search',{q,limit:30}).done(data=>{$results.html((data.results||[]).map((r,i)=>`<button class="list-group-item list-group-item-action" data-result="${i}"><strong>${esc(r.name)}</strong><br><code>${esc(r.id)}</code></button>`).join('')||'<div class="list-group-item text-muted">没有找到游戏。</div>'); $results.data('items',data.results||[]);}); }
+    $('#cheatSearchBtn').on('click',search); $search.on('keydown',e=>{if(e.key==='Enter')search();}); $results.on('click','[data-result]',function(){selectTitle($results.data('items')[Number($(this).data('result'))]);}); $('#cheatBuildSelect').on('change',loadEntries); $('#cheatEntries').on('click','[data-index]',function(){const e=entries[Number($(this).data('index'))]; $('#cheatEntries .active').removeClass('active');$(this).addClass('active');$('#cheatEntryName').text(e.name);$('#cheatEntryMeta').html(badges(e.tags)+(e.conflict_groups||[]).map(g=>`<span class="badge text-bg-warning me-1">冲突组：${esc(g)}</span>`).join(''));$('#cheatEntryCode').text(e.content);});
+})();
+</script>
+{% endblock %}

@@ -3031,6 +3031,15 @@ def get_cheats_for_build(title_id, build_id):
         return jsonify({'success': False, 'error': str(exc)}), 400
 
 
+@app.get('/api/cheats/titles/<title_id>')
+@access_required('admin')
+def list_cheat_builds(title_id):
+    try:
+        return jsonify(cheat_service.list_builds(title_id))
+    except InvalidCheatIdentifier as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+
 @app.post('/api/cheats/render')
 @tinfoil_access
 def render_cheats_for_build():
@@ -3164,6 +3173,14 @@ def upload_page():
     return render_template(
         'upload.html',
         title='Upload',
+        admin_account_created=admin_account_created())
+
+@app.route('/cheats')
+@access_required('admin')
+def cheats_page():
+    return render_template(
+        'cheats.html',
+        title='Cheats',
         admin_account_created=admin_account_created())
 
 
