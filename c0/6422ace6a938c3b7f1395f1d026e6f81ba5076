@@ -1,0 +1,27 @@
+README.md
+  s_a966402e60fc9c::t_b43a2c57b040b8 134-135
+app/app.py
+  s_a966402e60fc9c::t_ddd09f59908480 36,4378-4386
+app/cheats/service.py
+  s_a966402e60fc9c::t_84ea349a765ebb 79-82,252-253,469,492,520
+app/library.py
+  s_a966402e60fc9c::t_f68da64d36c7f9 23,1635-1639,1870-1874
+app/templates/cheats.html
+  s_a966402e60fc9c::t_1e2eeb404a6e75 49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "c06422ace6a938c3b7f1395f1d026e6f81ba5076",
+  "prompts": {},
+  "sessions": {
+    "s_a966402e60fc9c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4c6c-88ad-7411-bf2b-8e9feef7f083",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Cian <cian@macbook.local>"
+    }
+  }
+}
