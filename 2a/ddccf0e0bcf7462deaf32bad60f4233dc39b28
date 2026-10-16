@@ -1,0 +1,14 @@
+.github/workflows/ci.yml
+  h_54690c5e4af1ed 7-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "2addccf0e0bcf7462deaf32bad60f4233dc39b28",
+  "prompts": {},
+  "humans": {
+    "h_54690c5e4af1ed": {
+      "author": "Cian <cian@macbook.local>"
+    }
+  }
+}
