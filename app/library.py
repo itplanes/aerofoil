@@ -20,6 +20,7 @@ from pathlib import Path
 from app.utils import *
 
 _organize_lock = threading.Lock()
+_library_mutation_lock = threading.RLock()
 _pending_organize_paths = set()
 _pending_cleanup_roots = set()
 _SCAN_ADD_BATCH_SIZE = 250
@@ -1631,6 +1632,11 @@ def _build_destination(library_path, file_entry, app, title_name, dlc_name, acti
     return folder, filename
 
 def organize_library(dry_run=False, verbose=False, detail_limit=200):
+    with _library_mutation_lock:
+        return _organize_library_locked(dry_run, verbose, detail_limit)
+
+
+def _organize_library_locked(dry_run=False, verbose=False, detail_limit=200):
     results = {
         'success': True,
         'moved': 0,
@@ -1861,6 +1867,11 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
     return results
 
 def organize_files(filepaths, dry_run=False, verbose=False, detail_limit=200):
+    with _library_mutation_lock:
+        return _organize_files_locked(filepaths, dry_run, verbose, detail_limit)
+
+
+def _organize_files_locked(filepaths, dry_run=False, verbose=False, detail_limit=200):
     results = {
         'success': True,
         'moved': 0,

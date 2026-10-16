@@ -131,6 +131,8 @@ AeroFoil exposes exact Title ID and Build ID cheat lookup for UltraFoil:
 
 Client API v2 adds `GET /api/client/status` and the content-free `GET /api/cheats/titles/<title_id>/index` (shop access, not administrator access). Optional `installed_version` and `actual_build_id` query parameters return `exact`, `version_recommended`, `unknown` or `incompatible` per build. A version recommendation is not verification of a device's actual BID.
 
+`version` is the internal content version. The legacy `version_label` decodes its numeric components (`version_label_kind: internal_components`); it is not the game's marketing/display version. The management UI uses the internal number explicitly.
+
 Manual database synchronization runs in the background (`POST /api/cheats/database/sync` returns HTTP 202); poll `/api/cheats/database/status` for completion, source commit and failure details. Updates validate archive paths, file count, expanded size and title JSON before replacing the active snapshot. A failed replacement restores the previous generation. Title caches are bounded.
 
 Library organization now returns a structured dry-run plan and `plan_digest`. To execute through `/api/manage/organize`, send that digest with `dry_run: false`; if the current plan differs, the server returns HTTP 409 with a fresh preview. The web interface displays source/target paths and collision handling before confirmation. Dry runs never delete duplicate files.

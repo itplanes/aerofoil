@@ -76,7 +76,10 @@ class CheatService:
         self._generation = 0
         # Recover the previous generation if a process stopped between directory renames.
         if self._update_db_dir and not os.path.exists(self._update_db_dir) and os.path.isdir(self._update_db_dir + '.old'):
-            os.replace(self._update_db_dir + '.old', self._update_db_dir)
+            try:
+                os.replace(self._update_db_dir + '.old', self._update_db_dir)
+            except OSError as exc:
+                self._last_sync_error = f'Previous database recovery needs writable storage: {exc}'
 
     @staticmethod
     def compatibility(build_id, version=None, installed_version=None, actual_build_id=None):
@@ -246,6 +249,8 @@ class CheatService:
                 json.dump({'updated_at': int(time.time()), 'archive_url': archive_url,
                            'source_commit': source_commit, 'archive_sha256': digest.hexdigest()}, handle)
             with self._lock:
+                if not os.path.exists(self._update_db_dir) and os.path.isdir(backup):
+                    os.replace(backup, self._update_db_dir)
                 shutil.rmtree(backup, ignore_errors=True)
                 had_previous = os.path.exists(self._update_db_dir)
                 if had_previous:
@@ -461,6 +466,7 @@ class CheatService:
             'build_id': build_id,
             'version': title.get('versions', {}).get(build_id),
             'version_label': self.format_version(title.get('versions', {}).get(build_id)),
+            'version_label_kind': 'internal_components',
             'attributions': list(title.get('attributions', [])),
             'match': 'exact' if build_id in title['builds'] else 'none',
             'cheats': list(title['builds'].get(build_id, [])),
@@ -483,6 +489,7 @@ class CheatService:
                 'build_id': build_id,
                 'version': title.get('versions', {}).get(build_id),
                 'version_label': self.format_version(title.get('versions', {}).get(build_id)),
+                'version_label_kind': 'internal_components',
                 'cheat_count': len(entries),
                 'tag_counts': tag_counts,
                 'sources': sorted({entry.get('source', '') for entry in entries} - {''}),
@@ -510,6 +517,7 @@ class CheatService:
         grouped = {}
         for item in entries:
             if item.get('role') == 'master':
+                grouped.setdefault('master', []).append(item['id'])
                 continue
             for group in item.get('conflict_groups', []):
                 grouped.setdefault(group, []).append(item['id'])

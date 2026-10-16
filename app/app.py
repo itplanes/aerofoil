@@ -33,7 +33,7 @@ from app.auth import _effective_client_ip, _is_private_ip, _get_auth_protection_
 from app import titles
 from app.utils import *
 from app.library import *
-from app.library import _get_nsz_runner, _ensure_unique_path
+from app.library import _get_nsz_runner, _ensure_unique_path, _library_mutation_lock
 from app import titledb
 from app.title_requests import create_title_request, list_requests
 from app.cheats import CheatService, InvalidCheatIdentifier
@@ -4375,6 +4375,15 @@ def downloads_queue():
 @app.post('/api/manage/organize')
 @access_required('admin')
 def manage_organize_library():
+    if not _library_mutation_lock.acquire(blocking=False):
+        return jsonify({'success': False, 'errors': ['正在整理游戏库，请稍后重试。']}), 409
+    try:
+        return _manage_organize_library_locked()
+    finally:
+        _library_mutation_lock.release()
+
+
+def _manage_organize_library_locked():
     data = request.json or {}
     dry_run = bool(data.get('dry_run', False))
     verbose = bool(data.get('verbose', False))

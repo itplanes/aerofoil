@@ -46,7 +46,7 @@
         const params={};if(bid)params.actual_build_id=bid;if(version)params.installed_version=version;
         buildRequest=$.getJSON(`/api/cheats/titles/${id}`,params).done(data=>{
             if(token!==generation)return;builds=data.builds||[];
-            $('#cheatBuildSelect').prop('disabled',false).html(builds.length?builds.map(b=>`<option value="${esc(b.build_id)}">${esc(b.version_label||'版本未知')} / v${b.version??'?'} · ${esc(b.build_id)} · ${b.cheat_count} 项 · ${esc(matchNames[b.compatibility]||matchNames.unknown)}</option>`).join(''):'<option value="">没有找到金手指</option>');
+            $('#cheatBuildSelect').prop('disabled',false).html(builds.length?builds.map(b=>`<option value="${esc(b.build_id)}">内部版本 v${b.version??'未知'} · ${esc(b.build_id)} · ${b.cheat_count} 项 · ${esc(matchNames[b.compatibility]||matchNames.unknown)}</option>`).join(''):'<option value="">没有找到金手指</option>');
             const preferred=builds.find(b=>b.compatibility==='exact')||builds.find(b=>b.compatibility==='version_recommended');if(preferred)$('#cheatBuildSelect').val(preferred.build_id);
             $('#cheatAttributions').text('作者 / 来源：'+((data.attributions||[]).join('；')||'上游未注明'));
             if(data.provider_errors?.length)showError(data.provider_errors.join('\n'));loadEntries();
