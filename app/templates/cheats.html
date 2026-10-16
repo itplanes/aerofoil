@@ -15,28 +15,57 @@
         <div class="card mb-3"><div class="card-body">
             <div class="d-flex align-items-center gap-3"><img id="cheatGameIcon" width="64" height="64" class="rounded d-none" alt=""><div><h4 id="cheatGameName" class="mb-1"></h4><code id="cheatTitleId"></code></div></div>
             <hr><label class="form-label" for="cheatBuildSelect">Build ID（必须与游戏版本完全匹配）</label><select id="cheatBuildSelect" class="form-select"></select>
+            <div class="row g-2 mt-2"><div class="col-md-5"><label for="actualBuildId" class="form-label">设备实际 BID（可选）</label><input id="actualBuildId" class="form-control" maxlength="16" placeholder="运行游戏后从 Breeze / UltraFoil 获取"></div><div class="col-md-5"><label for="installedVersion" class="form-label">设备已安装内部版本（可选）</label><input id="installedVersion" class="form-control" inputmode="numeric" placeholder="例如 65536，不是显示版本名称"></div><div class="col-md-2 d-flex align-items-end"><button id="cheatMatchBtn" class="btn btn-outline-primary w-100">核对适配</button></div></div>
+            <div id="cheatMatchStatus" class="alert alert-secondary mt-3 mb-0" aria-live="polite"></div>
+            <div id="cheatAttributions" class="small text-muted mt-2"></div>
             <div id="cheatProviderErrors" class="alert alert-warning mt-3 d-none"></div>
         </div></div>
-        <div class="row g-3"><div class="col-lg-5"><div class="card"><div class="card-header">代码列表 <span id="cheatCount" class="badge text-bg-secondary"></span></div><div id="cheatEntries" class="list-group list-group-flush"></div></div></div>
-        <div class="col-lg-7"><div class="card"><div class="card-header">代码预览</div><div class="card-body"><h5 id="cheatEntryName" class="text-muted">请选择一项代码</h5><div id="cheatEntryMeta" class="mb-2"></div><pre id="cheatEntryCode" class="bg-black rounded p-3 overflow-auto" style="min-height:360px;white-space:pre-wrap"></pre></div></div></div></div>
+        <div class="row g-3"><div class="col-lg-5"><div class="card"><div class="card-header">代码列表 <span id="cheatCount" class="badge text-bg-secondary"></span></div><div id="cheatEntries" class="list-group list-group-flush" style="max-height:65vh;overflow-y:auto"></div></div></div>
+        <div class="col-lg-7"><div class="card"><div class="card-header">代码预览</div><div class="card-body"><h5 id="cheatEntryName" class="text-muted">请选择一项代码</h5><div id="cheatEntryMeta" class="mb-2"></div><pre id="cheatEntryCode" class="bg-black rounded p-3 overflow-auto" style="min-height:360px;max-height:65vh;white-space:pre-wrap"></pre></div></div></div></div>
     </div>
 </main>
 <script>
 (() => {
     const $search = $('#cheatGameSearch'), $results = $('#cheatSearchResults');
-    let selectedTitle = null, entries = [];
+    let selectedTitle = null, entries = [], builds = [], generation = 0, searchGeneration = 0;
+    let buildRequest = null, entryRequest = null, searchRequest = null;
     const tagNames = {fps:'FPS', resolution:'分辨率', graphics:'画质', cheat:'普通金手指'};
     function esc(v){ return $('<div>').text(String(v || '')).html(); }
     function badges(tags){ return (tags || []).map(t => `<span class="badge text-bg-info me-1">${esc(tagNames[t] || t)}</span>`).join(''); }
-    function selectTitle(item){ selectedTitle=item; $results.empty(); $search.val(`${item.name || item.id} [${item.id}]`); $('#cheatBrowser').removeClass('d-none'); $('#cheatGameName').text(item.name || item.id); $('#cheatTitleId').text(item.id); if(item.iconUrl) $('#cheatGameIcon').attr('src',item.iconUrl).removeClass('d-none'); else $('#cheatGameIcon').addClass('d-none'); loadBuilds(); }
-    function loadBuilds(){ $('#cheatBuildSelect').html('<option>加载中…</option>'); $.getJSON(`/api/cheats/titles/${selectedTitle.id}`).done(data => { const builds=data.builds||[]; $('#cheatBuildSelect').html(builds.length ? builds.map(b=>{const t=b.tag_counts||{};const summary=[t.fps?`FPS ${t.fps}`:'',t.resolution?`分辨率 ${t.resolution}`:'',t.graphics?`画质 ${t.graphics}`:'',t.cheat?`普通 ${t.cheat}`:''].filter(Boolean).join(' / ');return `<option value="${b.build_id}">${b.build_id}（${b.cheat_count} 项${summary?'；'+summary:''}）</option>`;}).join('') : '<option value="">没有找到金手指</option>'); const errors=data.provider_errors||[]; $('#cheatProviderErrors').toggleClass('d-none',!errors.length).text(errors.join('\n')); loadEntries(); }).fail(xhr=>alert(xhr.responseJSON?.error || '加载失败')); }
-    function loadEntries(){ const bid=$('#cheatBuildSelect').val(); if(!bid){ entries=[]; renderEntries(); return; } $.getJSON(`/api/cheats/titles/${selectedTitle.id}/builds/${bid}`).done(data=>{entries=data.cheats||[];renderEntries();}); }
+    const matchNames = {exact:'实际 BID 已匹配',version_recommended:'按版本推荐 · BID 尚未验证',unknown:'信息不足 · 尚未确认设备适配',incompatible:'与设备信息不兼容'};
+    function clearEntries(message='请选择一项代码'){entries=[];renderEntries();$('#cheatEntryName').text(message);$('#cheatEntryMeta,#cheatEntryCode').empty();}
+    function errorText(xhr){return xhr.responseJSON?.error || `请求失败（HTTP ${xhr.status || '网络不可用'}），可重新搜索。`;}
+    function showError(text){$('#cheatProviderErrors').removeClass('d-none').text(text);}
+    function selectTitle(item){generation++;buildRequest?.abort();entryRequest?.abort();selectedTitle=item;clearEntries();$('#actualBuildId,#installedVersion').val('');$results.empty();$search.val(`${item.name || item.id} [${item.id}]`);$('#cheatBrowser').removeClass('d-none');$('#cheatGameName').text(item.name || item.id);$('#cheatTitleId').text(item.id);if(item.iconUrl)$('#cheatGameIcon').attr('src',item.iconUrl).removeClass('d-none');else $('#cheatGameIcon').addClass('d-none');loadBuilds();}
+    function loadBuilds(){
+        if(!selectedTitle)return;
+        const bid=$('#actualBuildId').val().trim().toUpperCase(), version=$('#installedVersion').val().trim();
+        if((bid&&!/^[0-9A-F]{16}$/.test(bid))||(version&&!/^\d+$/.test(version))){showError('请输入 16 位 BID 和非负整数内部版本。');return;}
+        const token=++generation, id=selectedTitle.id;buildRequest?.abort();entryRequest?.abort();clearEntries('正在加载版本…');builds=[];
+        $('#cheatBuildSelect').prop('disabled',true).html('<option value="">加载中…</option>');$('#cheatProviderErrors').addClass('d-none');$('#cheatAttributions').empty();
+        const params={};if(bid)params.actual_build_id=bid;if(version)params.installed_version=version;
+        buildRequest=$.getJSON(`/api/cheats/titles/${id}`,params).done(data=>{
+            if(token!==generation)return;builds=data.builds||[];
+            $('#cheatBuildSelect').prop('disabled',false).html(builds.length?builds.map(b=>`<option value="${esc(b.build_id)}">${esc(b.version_label||'版本未知')} / v${b.version??'?'} · ${esc(b.build_id)} · ${b.cheat_count} 项 · ${esc(matchNames[b.compatibility]||matchNames.unknown)}</option>`).join(''):'<option value="">没有找到金手指</option>');
+            const preferred=builds.find(b=>b.compatibility==='exact')||builds.find(b=>b.compatibility==='version_recommended');if(preferred)$('#cheatBuildSelect').val(preferred.build_id);
+            $('#cheatAttributions').text('作者 / 来源：'+((data.attributions||[]).join('；')||'上游未注明'));
+            if(data.provider_errors?.length)showError(data.provider_errors.join('\n'));loadEntries();
+        }).fail((xhr,status)=>{if(token===generation&&status!=='abort'){clearEntries('版本加载失败');showError(errorText(xhr));$('#cheatBuildSelect').html('<option value="">加载失败，请重试</option>');}});
+    }
+    function loadEntries(){
+        const bid=$('#cheatBuildSelect').val(), build=builds.find(b=>b.build_id===bid), token=++generation;entryRequest?.abort();clearEntries('正在加载代码…');
+        $('#cheatMatchStatus').text(build?`${matchNames[build.compatibility]||matchNames.unknown}。下载文件不代表已经启用，实际开关请在运行游戏后检查。`:'此游戏暂无代码。');
+        if(!bid){clearEntries('没有可用版本');return;}
+        entryRequest=$.getJSON(`/api/cheats/titles/${selectedTitle.id}/builds/${bid}`).done(data=>{if(token!==generation)return;entries=data.cheats||[];renderEntries();$('#cheatEntryName').text('请选择一项代码');}).fail((xhr,status)=>{if(token===generation&&status!=='abort'){clearEntries('代码加载失败');showError(errorText(xhr));}});
+    }
     function renderEntries(){ $('#cheatCount').text(entries.length); $('#cheatEntries').html(entries.length ? entries.map((e,i)=>`<button class="list-group-item list-group-item-action" data-index="${i}"><div class="fw-semibold">${esc(e.name)}</div><div class="mt-1">${badges(e.tags)}</div><small class="text-muted">${esc(e.source)}</small></button>`).join('') : '<div class="p-3 text-muted">此 Build ID 没有可用代码。</div>'); }
-    function search(){ const q=$search.val().trim(); if(/^[0-9a-f]{16}$/i.test(q)){selectTitle({id:q.toUpperCase(),name:q.toUpperCase()});return;} if(!q)return; $results.html('<div class="list-group-item">搜索中…</div>'); $.getJSON('/api/titledb/search',{q,limit:30}).done(data=>{$results.html((data.results||[]).map((r,i)=>`<button class="list-group-item list-group-item-action" data-result="${i}"><strong>${esc(r.name)}</strong><br><code>${esc(r.id)}</code></button>`).join('')||'<div class="list-group-item text-muted">没有找到游戏。</div>'); $results.data('items',data.results||[]);}); }
-    function showSyncStatus(data){const when=data.last_updated_at?new Date(data.last_updated_at*1000).toLocaleString():'镜像内置版本';$('#cheatSyncStatus').text(`${data.using_updated_database?'本地同步版本':'内置快照'} · ${when}`);}
-    function loadSyncStatus(){$.getJSON('/api/cheats/database/status').done(showSyncStatus);}
-    $('#cheatSyncBtn').on('click',function(){const btn=$(this);btn.prop('disabled',true).text('正在更新…');$.ajax({url:'/api/cheats/database/sync',method:'POST'}).done(data=>{showSyncStatus(data);if(selectedTitle)loadBuilds();}).fail(xhr=>alert(xhr.responseJSON?.error||'更新失败')).always(()=>btn.prop('disabled',false).html('<i class="bi bi-cloud-download"></i> 立即更新数据库'));});
-    $('#cheatSearchBtn').on('click',search); $search.on('keydown',e=>{if(e.key==='Enter')search();}); $results.on('click','[data-result]',function(){selectTitle($results.data('items')[Number($(this).data('result'))]);}); $('#cheatBuildSelect').on('change',loadEntries); $('#cheatEntries').on('click','[data-index]',function(){const e=entries[Number($(this).data('index'))]; $('#cheatEntries .active').removeClass('active');$(this).addClass('active');$('#cheatEntryName').text(e.name);$('#cheatEntryMeta').html(badges(e.tags)+(e.conflict_groups||[]).map(g=>`<span class="badge text-bg-warning me-1">冲突组：${esc(g)}</span>`).join(''));$('#cheatEntryCode').text(e.content);});
+    function search(){const q=$search.val().trim(),token=++searchGeneration;searchRequest?.abort();if(/^[0-9a-f]{16}$/i.test(q)){selectTitle({id:q.toUpperCase(),name:q.toUpperCase()});return;}if(!q)return;$results.html('<div class="list-group-item">搜索中…</div>');searchRequest=$.getJSON('/api/titledb/search',{q,limit:30}).done(data=>{if(token!==searchGeneration)return;$results.html((data.results||[]).map((r,i)=>`<button class="list-group-item list-group-item-action" data-result="${i}"><strong>${esc(r.name)}</strong><br><code>${esc(r.id)}</code></button>`).join('')||'<div class="list-group-item text-muted">没有找到游戏。</div>');$results.data('items',data.results||[]);}).fail((xhr,status)=>{if(token===searchGeneration&&status!=='abort')$results.text(errorText(xhr));});}
+    let syncWasRunning=false;
+    function showSyncStatus(data){const when=data.last_updated_at?new Date(data.last_updated_at*1000).toLocaleString():'镜像内置版本';$('#cheatSyncStatus').text(`${data.sync_running?'正在后台更新':data.using_updated_database?'本地同步版本':'内置快照'} · ${when}${data.source_commit?' · '+data.source_commit.slice(0,12):''}${data.last_error?' · 上次失败：'+data.last_error:''}`);$('#cheatSyncBtn').prop('disabled',!!data.sync_running).text(data.sync_running?'正在更新…':'立即更新数据库');if(syncWasRunning&&!data.sync_running&&!data.last_error&&selectedTitle)loadBuilds();syncWasRunning=!!data.sync_running;if(data.sync_running)setTimeout(loadSyncStatus,1500);}
+    function loadSyncStatus(){$.getJSON('/api/cheats/database/status').done(showSyncStatus).fail(()=>setTimeout(loadSyncStatus,5000));}
+    $('#cheatSyncBtn').on('click',function(){$(this).prop('disabled',true);$.ajax({url:'/api/cheats/database/sync',method:'POST'}).done(()=>loadSyncStatus()).fail(xhr=>{showError(errorText(xhr));loadSyncStatus();});});
+    $('#cheatMatchBtn').on('click',loadBuilds);
+    $('#cheatSearchBtn').on('click',search); $search.on('keydown',e=>{if(e.key==='Enter')search();}); $results.on('click','[data-result]',function(){selectTitle($results.data('items')[Number($(this).data('result'))]);}); $('#cheatBuildSelect').on('change',loadEntries); $('#cheatEntries').on('click','[data-index]',function(){const e=entries[Number($(this).data('index'))];if(!e)return; $('#cheatEntries .active').removeClass('active');$(this).addClass('active');$('#cheatEntryName').text(e.name);$('#cheatEntryMeta').html(badges(e.tags)+`<span class="badge text-bg-secondary">${esc({master:'必需主码',restore:'恢复码',normal:'普通开关'}[e.role]||'普通开关')}</span>`+(e.conflict_groups||[]).map(g=>`<span class="badge text-bg-warning me-1">互斥设置：${esc(g)}</span>`).join(''));$('#cheatEntryCode').text(e.content);});
     const params=new URLSearchParams(location.search);const initialId=(params.get('title_id')||'').trim().toUpperCase();if(/^[0-9A-F]{16}$/.test(initialId))selectTitle({id:initialId,name:params.get('name')||initialId});
     loadSyncStatus();
 })();

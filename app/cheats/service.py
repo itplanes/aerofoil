@@ -7,6 +7,8 @@ import tempfile
 import threading
 import time
 import zipfile
+import stat
+from collections import OrderedDict
 
 import requests
 
@@ -15,6 +17,8 @@ _TITLE_ID_RE = re.compile(r'^[0-9A-F]{16}$')
 _BUILD_ID_RE = re.compile(r'^[0-9A-F]{16}$')
 _MAX_PROVIDER_RESPONSE = 8 * 1024 * 1024
 _MAX_CHEAT_CONTENT = 1024 * 1024
+_MAX_ARCHIVE_FILES = 200000
+_MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024
 
 _FPS_RE = re.compile(r'(?i)(?:\b(?:30|40|45|50|60|90|120|144)\s*fps\b|\bfps\b|frame\s*rate|framerate)')
 _RESOLUTION_RE = re.compile(r'(?i)(?:resolution|dynamic\s*res|\b(?:360|480|540|720|900|1080|1440|2160)p\b|\b[248]k\b)')
@@ -61,9 +65,34 @@ class CheatService:
             ('database', 'cheats', f'{base}/cheats/{{title_id}}.json'),
             ('graphics', 'cheats_gfx', f'{base}/cheats_gfx/{{title_id}}.json'),
         )
-        self._cache = {}
-        self._lock = threading.Lock()
+        self._cache = OrderedDict()
+        self._cache_bytes = 0
+        self._lock = threading.RLock()
         self._sync_lock = threading.Lock()
+        self._sync_start_lock = threading.Lock()
+        self._sync_thread = None
+        self._last_sync_error = None
+        self._last_sync_attempt = None
+        self._generation = 0
+        # Recover the previous generation if a process stopped between directory renames.
+        if self._update_db_dir and not os.path.exists(self._update_db_dir) and os.path.isdir(self._update_db_dir + '.old'):
+            os.replace(self._update_db_dir + '.old', self._update_db_dir)
+
+    @staticmethod
+    def compatibility(build_id, version=None, installed_version=None, actual_build_id=None):
+        if actual_build_id:
+            return 'exact' if build_id == actual_build_id else 'incompatible'
+        if installed_version is None or version is None:
+            return 'unknown'
+        return 'version_recommended' if int(version) == int(installed_version) else 'incompatible'
+
+    @staticmethod
+    def entry_role(name, content):
+        if str(content).lstrip().startswith('{') or re.fullmatch(r'(?i)\s*(?:master\s*(?:code)?|must be on|enable code)\s*', name):
+            return 'master'
+        if re.search(r'(?i)\b(?:restore|revert|default|disable code)\b', name):
+            return 'restore'
+        return 'normal'
 
     @staticmethod
     def format_version(value):
@@ -107,6 +136,10 @@ class CheatService:
         return self._local_db_dir
 
     def get_sync_status(self):
+        with self._lock:
+            return self._get_sync_status_unlocked()
+
+    def _get_sync_status_unlocked(self):
         active = self._active_local_db_dir()
         metadata = {}
         metadata_path = os.path.join(self._update_db_dir, '.aerofoil-sync.json') if self._update_db_dir else ''
@@ -120,19 +153,50 @@ class CheatService:
             'using_updated_database': bool(active and active == self._update_db_dir),
             'last_updated_at': metadata.get('updated_at'),
             'archive_url': self._archive_url,
+            'source_commit': metadata.get('source_commit') or (os.getenv('AEROFOIL_CHEATS_BUNDLED_REF') if active == self._local_db_dir else None),
+            'archive_sha256': metadata.get('archive_sha256'),
+            'sync_running': self._sync_lock.locked() or bool(self._sync_thread and self._sync_thread.is_alive()),
+            'last_attempt_at': self._last_sync_attempt,
+            'last_error': self._last_sync_error,
         }
+
+    def start_sync(self):
+        with self._sync_start_lock:
+            if not (self._sync_thread and self._sync_thread.is_alive()):
+                def run():
+                    try:
+                        self.sync_database()
+                    except Exception:
+                        pass  # Failure remains available through the status endpoint.
+                self._sync_thread = threading.Thread(target=run, name='cheat-database-sync', daemon=True)
+                self._sync_thread.start()
+        return self.get_sync_status()
 
     def sync_database(self):
         if not self._update_db_dir or not self._archive_url:
             raise ValueError('Cheat database synchronization is not configured.')
         if not self._sync_lock.acquire(blocking=False):
             raise ValueError('Cheat database synchronization is already running.')
-        work_dir = tempfile.mkdtemp(prefix='aerofoil-cheatdb-')
+        work_dir = None
+        self._last_sync_attempt = int(time.time())
+        self._last_sync_error = None
         try:
+            work_dir = tempfile.mkdtemp(prefix='aerofoil-cheatdb-')
             archive_path = os.path.join(work_dir, 'database.zip')
-            response = self._session.get(self._archive_url, timeout=(10, 120), stream=True)
+            archive_url = self._archive_url
+            source_commit = None
+            github = re.fullmatch(r'https://github.com/([^/]+/[^/]+)/archive/refs/heads/([^/]+)\.zip', archive_url)
+            if github:
+                commit_response = self._session.get(f'https://api.github.com/repos/{github[1]}/commits/{github[2]}', timeout=(10, 20))
+                commit_response.raise_for_status()
+                source_commit = commit_response.json().get('sha')
+                if not re.fullmatch(r'[0-9a-fA-F]{40}', str(source_commit or '')):
+                    raise ValueError('Unable to resolve the cheat database source commit.')
+                archive_url = f'https://github.com/{github[1]}/archive/{source_commit}.zip'
+            response = self._session.get(archive_url, timeout=(10, 120), stream=True)
             response.raise_for_status()
             total = 0
+            digest = hashlib.sha256()
             with open(archive_path, 'wb') as handle:
                 for chunk in response.iter_content(256 * 1024):
                     if not chunk:
@@ -140,14 +204,21 @@ class CheatService:
                     total += len(chunk)
                     if total > 256 * 1024 * 1024:
                         raise ValueError('Cheat database archive exceeds the size limit.')
+                    digest.update(chunk)
                     handle.write(chunk)
             extract_dir = os.path.join(work_dir, 'extract')
             os.makedirs(extract_dir, exist_ok=True)
             with zipfile.ZipFile(archive_path) as archive:
-                for member in archive.infolist():
+                members = archive.infolist()
+                if len(members) > _MAX_ARCHIVE_FILES or sum(m.file_size for m in members) > _MAX_EXTRACTED_BYTES:
+                    raise ValueError('Cheat database extraction exceeds the file count or size limit.')
+                for member in members:
                     target = os.path.abspath(os.path.join(extract_dir, member.filename))
-                    if os.path.commonpath([os.path.abspath(extract_dir), target]) != os.path.abspath(extract_dir):
+                    if (os.path.commonpath([os.path.abspath(extract_dir), target]) != os.path.abspath(extract_dir)
+                            or '\\' in member.filename or stat.S_ISLNK(member.external_attr >> 16)):
                         raise ValueError('Cheat database archive contains an unsafe path.')
+                    if member.file_size > _MAX_PROVIDER_RESPONSE:
+                        raise ValueError('Cheat database member exceeds the size limit.')
                 archive.extractall(extract_dir)
             roots = [os.path.join(extract_dir, name) for name in os.listdir(extract_dir)]
             roots = [path for path in roots if os.path.isdir(path)]
@@ -155,22 +226,46 @@ class CheatService:
             required = ('cheats', 'cheats_gbatemp', 'cheats_gfx')
             if not all(os.path.isdir(os.path.join(source, name)) for name in required):
                 raise ValueError('Downloaded cheat database is missing required directories.')
+            valid_files = 0
+            for directory in required:
+                for filename in os.listdir(os.path.join(source, directory)):
+                    if not re.fullmatch(r'[0-9a-fA-F]{16}\.json', filename):
+                        continue
+                    with open(os.path.join(source, directory, filename), encoding='utf-8') as handle:
+                        if not isinstance(json.load(handle), dict):
+                            raise ValueError('Cheat database contains an invalid JSON payload.')
+                    valid_files += 1
+            if not valid_files:
+                raise ValueError('Cheat database contains no title files.')
             staging = f'{self._update_db_dir}.new'
             backup = f'{self._update_db_dir}.old'
             shutil.rmtree(staging, ignore_errors=True)
             shutil.copytree(source, staging)
             with open(os.path.join(staging, '.aerofoil-sync.json'), 'w', encoding='utf-8') as handle:
-                json.dump({'updated_at': int(time.time()), 'archive_url': self._archive_url}, handle)
-            shutil.rmtree(backup, ignore_errors=True)
-            if os.path.exists(self._update_db_dir):
-                os.replace(self._update_db_dir, backup)
-            os.replace(staging, self._update_db_dir)
-            shutil.rmtree(backup, ignore_errors=True)
+                json.dump({'updated_at': int(time.time()), 'archive_url': archive_url,
+                           'source_commit': source_commit, 'archive_sha256': digest.hexdigest()}, handle)
             with self._lock:
+                shutil.rmtree(backup, ignore_errors=True)
+                had_previous = os.path.exists(self._update_db_dir)
+                if had_previous:
+                    os.replace(self._update_db_dir, backup)
+                try:
+                    os.replace(staging, self._update_db_dir)
+                except Exception:
+                    if had_previous:
+                        os.replace(backup, self._update_db_dir)
+                    raise
+                shutil.rmtree(backup, ignore_errors=True)
+                self._generation += 1
                 self._cache.clear()
+                self._cache_bytes = 0
             return self.get_sync_status()
+        except Exception as exc:
+            self._last_sync_error = str(exc)
+            raise
         finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+            if work_dir:
+                shutil.rmtree(work_dir, ignore_errors=True)
             self._sync_lock.release()
 
     @staticmethod
@@ -240,17 +335,18 @@ class CheatService:
         return response.json() if not raw else json.loads(raw.decode('utf-8'))
 
     def _get_provider_json(self, directory, url, title_id):
-        local_db_dir = self._active_local_db_dir()
-        if local_db_dir:
-            path = os.path.join(local_db_dir, directory, f'{title_id}.json')
-            try:
-                size = os.path.getsize(path)
-                if size > _MAX_PROVIDER_RESPONSE:
-                    raise ValueError('Bundled cheat provider file exceeds the size limit.')
-                with open(path, 'r', encoding='utf-8') as handle:
-                    return json.load(handle)
-            except FileNotFoundError:
-                pass
+        with self._lock:
+            local_db_dir = self._active_local_db_dir()
+            if local_db_dir:
+                path = os.path.join(local_db_dir, directory, f'{title_id}.json')
+                try:
+                    size = os.path.getsize(path)
+                    if size > _MAX_PROVIDER_RESPONSE:
+                        raise ValueError('Bundled cheat provider file exceeds the size limit.')
+                    with open(path, 'r', encoding='utf-8') as handle:
+                        return json.load(handle)
+                except FileNotFoundError:
+                    pass
         if not self._remote_fallback:
             return {}
         return self._get_json(url)
@@ -258,8 +354,10 @@ class CheatService:
     def _load_title(self, title_id):
         now = time.monotonic()
         with self._lock:
+            generation = self._generation
             cached = self._cache.get(title_id)
             if cached and now - cached[0] < self._cache_ttl_s:
+                self._cache.move_to_end(title_id)
                 return cached[1]
 
         merged = {}
@@ -310,6 +408,7 @@ class CheatService:
                         'source': source,
                         'tags': classification['tags'],
                         'conflict_groups': classification['conflict_groups'],
+                        'role': self.entry_role(name, content),
                     })
                     known_hashes.add(content_hash)
 
@@ -320,7 +419,18 @@ class CheatService:
             'provider_errors': errors,
         }
         with self._lock:
-            self._cache[title_id] = (now, result)
+            if generation == self._generation:
+                content_size = sum(len(entry['content'].encode('utf-8')) for entries in merged.values() for entry in entries)
+                previous = self._cache.pop(title_id, None)
+                if previous:
+                    self._cache_bytes -= previous[2]
+                self._cache[title_id] = (now, result, content_size)
+                self._cache_bytes += content_size
+                while len(self._cache) > 64 or self._cache_bytes > 32 * 1024 * 1024:
+                    _, discarded = self._cache.popitem(last=False)
+                    self._cache_bytes -= discarded[2]
+            else:
+                return self._load_title(title_id)
         return result
 
     def find_build(self, title_id, build_id):
@@ -339,8 +449,10 @@ class CheatService:
             'provider_errors': list(title['provider_errors']),
         }
 
-    def list_builds(self, title_id):
+    def list_builds(self, title_id, installed_version=None, actual_build_id=None):
         title_id = self.normalize_title_id(title_id)
+        if actual_build_id:
+            actual_build_id = self.normalize_build_id(actual_build_id)
         title = self._load_title(title_id)
         builds = []
         for build_id, entries in sorted(title['builds'].items()):
@@ -354,12 +466,16 @@ class CheatService:
                 'version_label': self.format_version(title.get('versions', {}).get(build_id)),
                 'cheat_count': len(entries),
                 'tag_counts': tag_counts,
+                'sources': sorted({entry.get('source', '') for entry in entries} - {''}),
+                'compatibility': self.compatibility(build_id, title.get('versions', {}).get(build_id), installed_version, actual_build_id),
             })
         return {
             'title_id': title_id,
             'builds': builds,
             'provider_errors': list(title['provider_errors']),
             'attributions': list(title.get('attributions', [])),
+            'installed_version': installed_version,
+            'actual_build_id': actual_build_id,
         }
 
     def render(self, title_id, build_id, selected_ids):

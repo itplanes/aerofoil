@@ -15,6 +15,7 @@ RUN mkdir /app
 # Bundle a reproducible cheat database snapshot. Runtime queries use these
 # local JSON files first and only contact the upstream source as a fallback.
 ARG AEROFOIL_CHEATS_DB_REF=911426953758ea83569de183b8f65b6fa76ea901
+ENV AEROFOIL_CHEATS_BUNDLED_REF=$AEROFOIL_CHEATS_DB_REF
 RUN mkdir -p /opt/aerofoil-cheatdb \
     && cd /opt/aerofoil-cheatdb \
     && git init \

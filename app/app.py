@@ -3045,13 +3045,37 @@ def get_cheats_for_build(title_id, build_id):
         return jsonify({'success': False, 'error': str(exc)}), 400
 
 
+def _cheat_index_response(title_id):
+    try:
+        version = request.args.get('installed_version')
+        version = int(version) if version is not None else None
+        if version is not None and not 0 <= version <= 0xFFFFFFFF:
+            raise ValueError('installed_version must be an unsigned 32-bit internal version.')
+        return jsonify(cheat_service.list_builds(title_id, version, request.args.get('actual_build_id')))
+    except (InvalidCheatIdentifier, ValueError) as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+
 @app.get('/api/cheats/titles/<title_id>')
 @access_required('admin')
 def list_cheat_builds(title_id):
-    try:
-        return jsonify(cheat_service.list_builds(title_id))
-    except InvalidCheatIdentifier as exc:
-        return jsonify({'success': False, 'error': str(exc)}), 400
+    return _cheat_index_response(title_id)
+
+
+@app.get('/api/cheats/titles/<title_id>/index')
+@tinfoil_access
+def cheat_build_index(title_id):
+    # A content-free index is available to devices without granting admin access.
+    return _cheat_index_response(title_id)
+
+
+@app.get('/api/client/status')
+@tinfoil_access
+def client_status():
+    return jsonify({'success': True, 'version': APP_VERSION, 'api_version': 2,
+                    'capabilities': ['cheat-index', 'cheat-compatibility-v1', 'save-sync'],
+                    'cheat_database': {key: value for key, value in cheat_service.get_sync_status().items()
+                                       if key in ('last_updated_at', 'source_commit', 'sync_running', 'last_error')}})
 
 
 @app.get('/api/cheats/database/status')
@@ -3064,7 +3088,7 @@ def cheat_database_status():
 @access_required('admin')
 def sync_cheat_database():
     try:
-        return jsonify({'success': True, **cheat_service.sync_database()})
+        return jsonify({'success': True, **cheat_service.start_sync()}), 202
     except Exception as exc:
         logger.warning('Manual cheat database synchronization failed: %s', exc)
         return jsonify({'success': False, 'error': str(exc)}), 502
@@ -4354,6 +4378,11 @@ def manage_organize_library():
     data = request.json or {}
     dry_run = bool(data.get('dry_run', False))
     verbose = bool(data.get('verbose', False))
+    if not dry_run:
+        preview = organize_library(dry_run=True, verbose=False)
+        if not preview.get('success') or data.get('plan_digest') != preview.get('plan_digest'):
+            return jsonify({'success': False, 'errors': ['整理计划已变化或尚未预览，请重新预览后确认。'],
+                            'preview': preview}), 409
     results = organize_library(dry_run=dry_run, verbose=verbose)
     if results.get('success') and not dry_run:
         post_library_change()
@@ -4707,6 +4736,9 @@ def manage_memory_diagnostics():
     return jsonify({
         'success': True,
         'timestamp': now,
+        'server': {'version': APP_VERSION, 'api_version': 2,
+                   'cheat_database': cheat_service.get_sync_status(),
+                   'storage_free_bytes': shutil.disk_usage(DATA_DIR).free if os.path.isdir(DATA_DIR) else None},
         'process': _read_proc_meminfo_bytes(),
         'python_gc': {
             'counts': list(gc.get_count()),

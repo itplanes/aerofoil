@@ -1,6 +1,7 @@
 import copy
 import gc
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -1122,14 +1123,16 @@ def _format_version_txt(value):
     patch = num & 0xFF
     return f"{major}.{minor}.{patch}"
 
-def _ensure_unique_path(path):
-    if not os.path.exists(path):
+def _ensure_unique_path(path, reserved=None):
+    reserved = reserved if reserved is not None else set()
+    if not os.path.exists(path) and os.path.normcase(os.path.abspath(path)) not in reserved:
         return path
     base, ext = os.path.splitext(path)
     counter = 1
     while True:
-        candidate = f"{base} ({counter}){ext}"
-        if not os.path.exists(candidate):
+        suffix = f" ({counter}){ext}"
+        candidate = os.path.join(os.path.dirname(path), _truncate_utf8(os.path.basename(base), 240, suffix=suffix))
+        if not os.path.exists(candidate) and os.path.normcase(os.path.abspath(candidate)) not in reserved:
             return candidate
         counter += 1
 
@@ -1635,9 +1638,29 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
         'folders_deleted': 0,
         'folders_failed': 0,
         'errors': [],
-        'details': []
+        'details': [],
+        'plan': [],
+        'plan_truncated': False,
     }
     detail_count = 0
+    reserved_destinations = set()
+    plan_digest = hashlib.sha256()
+
+    def add_plan(source, destination, action, collision=False):
+        evidence = [source, destination, action]
+        for path in (source, destination):
+            try:
+                info = os.stat(path)
+                evidence.append([info.st_size, info.st_mtime_ns])
+            except OSError:
+                evidence.append(None)
+        plan_digest.update(json.dumps(evidence, ensure_ascii=True).encode('utf-8'))
+        if len(results['plan']) < detail_limit:
+            results['plan'].append({'source': source, 'destination': destination, 'action': action,
+                                    'collision_renamed': collision,
+                                    'filename_bytes': len(os.path.basename(destination).encode('utf-8'))})
+        else:
+            results['plan_truncated'] = True
 
     def add_detail(message):
         nonlocal detail_count
@@ -1763,6 +1786,11 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
                         dest_size = None
 
                     if signature_match:
+                        add_plan(old_path, dest_path, 'keep_existing_remove_duplicate')
+                        if dry_run:
+                            results['skipped'] += 1
+                            add_detail(f"Plan duplicate removal; keep {dest_path}: {old_path}.")
+                            continue
                         existing_entry = Files.query.filter_by(filepath=dest_path).first()
                         if existing_entry:
                             for app in list(file_entry.apps):
@@ -1780,7 +1808,10 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
                         results['skipped'] += 1
                         add_detail(f"Skip duplicate; kept existing: {dest_path}.")
                         continue
-                dest_path = _ensure_unique_path(dest_path)
+                requested_path = dest_path
+                dest_path = _ensure_unique_path(dest_path, reserved_destinations)
+                reserved_destinations.add(os.path.normcase(os.path.abspath(dest_path)))
+                add_plan(file_entry.filepath, dest_path, 'move', dest_path != requested_path)
 
                 if not dry_run:
                     try:
@@ -1826,6 +1857,7 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
 
     if results['errors']:
         results['success'] = False
+    results['plan_digest'] = plan_digest.hexdigest()
     return results
 
 def organize_files(filepaths, dry_run=False, verbose=False, detail_limit=200):
@@ -1922,6 +1954,10 @@ def organize_files(filepaths, dry_run=False, verbose=False, detail_limit=200):
                     dest_size = None
 
                 if signature_match:
+                    if dry_run:
+                        results['skipped'] += 1
+                        add_detail(f"Plan duplicate removal; keep {dest_path}: {old_path}.")
+                        continue
                     existing_entry = Files.query.filter_by(filepath=dest_path).first()
                     if existing_entry:
                         for app in list(file_entry.apps):

@@ -1,5 +1,7 @@
 # AeroFoil
 
+![Regression checks](https://github.com/itplanes/aerofoil/actions/workflows/ci.yml/badge.svg)
+
 [![Latest Release](https://img.shields.io/docker/v/luketanti/aerofoil?sort=semver)](https://github.com/luketanti/aerofoil/releases/latest)
 [![Docker Pulls](https://img.shields.io/docker/pulls/luketanti/aerofoil)](https://hub.docker.com/r/luketanti/aerofoil)
 [![Docker Image Size](https://img.shields.io/docker/image-size/luketanti/aerofoil/latest?arch=amd64)](https://hub.docker.com/r/luketanti/aerofoil/tags)
@@ -126,6 +128,12 @@ AeroFoil exposes exact Title ID and Build ID cheat lookup for UltraFoil:
 
 - `GET /api/cheats/titles/<title_id>/builds/<build_id>`
 - `POST /api/cheats/render`
+
+Client API v2 adds `GET /api/client/status` and the content-free `GET /api/cheats/titles/<title_id>/index` (shop access, not administrator access). Optional `installed_version` and `actual_build_id` query parameters return `exact`, `version_recommended`, `unknown` or `incompatible` per build. A version recommendation is not verification of a device's actual BID.
+
+Manual database synchronization runs in the background (`POST /api/cheats/database/sync` returns HTTP 202); poll `/api/cheats/database/status` for completion, source commit and failure details. Updates validate archive paths, file count, expanded size and title JSON before replacing the active snapshot. A failed replacement restores the previous generation. Title caches are bounded.
+
+Library organization now returns a structured dry-run plan and `plan_digest`. To execute through `/api/manage/organize`, send that digest with `dry_run: false`; if the current plan differs, the server returns HTTP 409 with a fresh preview. The web interface displays source/target paths and collision handling before confirmation. Dry runs never delete duplicate files.
 
 Cheats are merged from the configured structured database sources, normalized, and deduplicated by content hash. UltraFoil only installs exact Build ID matches.
 

@@ -368,11 +368,35 @@
         });
     }
 
-    function organizeLibrary() {
+    let organizePlanDigest = null;
+    function showOrganizePlan(result) {
+        let panel = $('#organizePreview');
+        if (!panel.length) panel = $('<div id="organizePreview" class="border rounded p-3 my-3"></div>').insertAfter($('#organizeLibraryBtn').closest('.border'));
+        panel.empty().append($('<h5>').text('整理计划'));
+        const wrap = $('<div class="table-responsive" style="max-height:360px;overflow:auto"></div>');
+        const table = $('<table class="table table-sm"><thead><tr><th>原路径</th><th>目标路径</th><th>处理</th></tr></thead></table>');
+        const body = $('<tbody>');
+        for (const item of result.plan || []) {
+            const action = item.action === 'keep_existing_remove_duplicate' ? '保留目标、移除重复源文件' : item.collision_renamed ? '移动（重名自动编号）' : '移动';
+            body.append($('<tr>').append($('<td class="text-break">').text(item.source), $('<td class="text-break">').text(item.destination), $('<td>').text(`${action}；文件名 ${item.filename_bytes} 字节`)));
+        }
+        wrap.append(table.append(body));panel.append(wrap);
+        if(result.plan_truncated)panel.append($('<p class="text-warning">').text('仅显示前 200 项，确认将执行完整计划。'));
+        panel.append($('<p class="small text-muted">').text('文件名按 UTF-8 字节限制；执行前会重新核对完整计划，变化后需要重新确认。'));
+        organizePlanDigest = result.plan_digest;
+        if(!$('#organizeDryRun').is(':checked') && (result.plan || []).length) {
+            panel.append($('<button class="btn btn-warning">').text('确认执行此整理计划').on('click',function(){
+                $(this).prop('disabled',true);executeOrganize(false);
+            }));
+        }
+    }
+    function organizeLibrary() { executeOrganize(true); }
+    function executeOrganize(preview) {
         $('#organizeLibraryBtn').prop('disabled', true);
-        data = {
-            dry_run: $('#organizeDryRun').is(':checked'),
-            verbose: $('#organizeVerbose').is(':checked')
+        const data = {
+            dry_run: preview,
+            verbose: $('#organizeVerbose').is(':checked'),
+            plan_digest: organizePlanDigest
         }
         $.ajax({
             url: "/api/manage/organize",
@@ -381,17 +405,24 @@
             contentType: "application/json",
             success: function (result) {
                 if (result['success']) {
+                    if(preview)showOrganizePlan(result);
+                    else {organizePlanDigest=null;$('#organizePreview').empty();}
                     const deletedFolders = result['folders_deleted'] != null ? result['folders_deleted'] : 0;
                     const failedFolders = result['folders_failed'] != null ? result['folders_failed'] : 0;
                     const folderNote = deletedFolders || failedFolders
                         ? ` Deleted ${deletedFolders} empty folders${failedFolders ? ` (${failedFolders} failed)` : ''}.`
                         : '';
-                    showManageAlert(`Organize complete. Moved ${result['moved']} items. Skipped ${result['skipped']}.${folderNote}`, 'success');
+                    showManageAlert(`${preview?'预览完成，尚未修改文件。':'整理完成。'} Moved ${result['moved']} items. Skipped ${result['skipped']}.${folderNote}`, 'success');
                     showManageOutput(result['details']);
                 } else {
                     showManageAlert(`Organize failed: ${result['errors'].join('; ')}`, 'danger');
                     showManageOutput(result['details']);
                 }
+            },
+            error: function(xhr) {
+                organizePlanDigest=null;
+                if(xhr.responseJSON?.preview)showOrganizePlan(xhr.responseJSON.preview);
+                showManageAlert((xhr.responseJSON?.errors||['整理请求失败，请重试。']).join('; '),'danger');
             },
             complete: function () {
                 $('#organizeLibraryBtn').prop('disabled', false);
@@ -1037,6 +1068,10 @@
                 const gcCounts = Array.isArray(gcInfo['counts']) ? gcInfo['counts'] : [];
 
                 const lines = [];
+                const server = result.server || {}, cheats = server.cheat_database || {};
+                lines.push(`AeroFoil ${server.version || '?'} / client API ${server.api_version || '?'}`);
+                lines.push(`data storage free: ${formatDiagBytes(server.storage_free_bytes)}`);
+                lines.push(`cheats: ${cheats.sync_running?'syncing':'idle'} commit=${cheats.source_commit || 'bundled/unknown'} last_error=${cheats.last_error || 'none'}`);
                 lines.push(`updated: ${new Date((result['timestamp'] || 0) * 1000).toLocaleString()}`);
                 lines.push(`process: rss=${formatDiagBytes(process['rss_bytes'])} vms=${formatDiagBytes(process['vms_bytes'])}`);
                 lines.push(`scan: in_progress=${!!scan['scan_in_progress']} rebuild=${!!rebuild['in_progress']}`);

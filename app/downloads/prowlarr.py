@@ -249,7 +249,7 @@ def analyze_result_match(result, title_id=None, version=None):
 
     score = _score_result(result, title_id=title_id, version=version)
     if "title_id_family_match" in reasons:
-        score += 40
+        score += 50
     if "different_version" in reasons:
         score -= 35
     confidence = "high" if score >= 75 else "medium" if score >= 35 else "low"

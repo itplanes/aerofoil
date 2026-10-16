@@ -1234,18 +1234,20 @@ def _match_completed_item(info, completed_items):
     return None
 
 
-def _resolve_completed_update_info(info, completed_item):
+def _resolve_completed_update_info(info, completed_item, detected_identity=None):
     if not isinstance(info, dict):
         return info
     title_id = str(info.get("title_id") or "").strip()
     version = info.get("version")
-    if info.get("app_type") != APP_TYPE_BASE and title_id and version is not None:
+    if info.get("app_type") == APP_TYPE_BASE or (title_id and version is not None):
         return info
-    inferred = _infer_update_info_from_completed_item(completed_item)
+    inferred = detected_identity or _infer_update_info_from_completed_item(completed_item)
     if not inferred:
         return info
     merged = dict(info)
-    merged["app_type"] = APP_TYPE_UPD
+    merged["app_type"] = inferred.get("app_type") or APP_TYPE_UPD
+    if inferred.get("app_id"):
+        merged["app_id"] = inferred["app_id"]
     merged["title_id"] = inferred.get("title_id")
     merged["title_name"] = inferred.get("title_name") or merged.get("title_name")
     merged["version"] = inferred.get("version")
@@ -1490,7 +1492,7 @@ def _process_tracked_completed_item_locked(key, info, bucket):
         info["detected_identity"] = actual_identity
         _set_pending_stuck(info, identity_reason, live_item=match)
         return []
-    move_info = _resolve_completed_update_info(info, match)
+    move_info = _resolve_completed_update_info(info, match, actual_identity)
     moved_result, move_reason = _move_completed_with_reason(match, move_info)
     moved_match_paths = _coerce_moved_paths(moved_result)
     if not moved_match_paths:
