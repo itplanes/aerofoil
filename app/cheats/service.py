@@ -88,7 +88,8 @@ class CheatService:
 
     @staticmethod
     def entry_role(name, content):
-        if str(content).lstrip().startswith('{') or re.fullmatch(r'(?i)\s*(?:master\s*(?:code)?|must be on|enable code)\s*', name):
+        heading = _CHEAT_SECTION_RE.search(str(content))
+        if (heading and heading.group().strip().startswith('{')) or re.fullmatch(r'(?i)\s*(?:master\s*(?:code)?|must be on|enable code)\s*', name):
             return 'master'
         if re.search(r'(?i)\b(?:restore|revert|default|disable code)\b', name):
             return 'restore'
@@ -317,6 +318,22 @@ class CheatService:
             return clean_content
         return f'[{clean_name}]\n{clean_content}'
 
+    @staticmethod
+    def split_sections(name, content):
+        sections = list(_CHEAT_SECTION_RE.finditer(content))
+        if len(sections) < 2:
+            return [(name, content)]
+        prefix = content[:sections[0].start()].strip()
+        if any(line.strip() and not line.lstrip().startswith(('#', ';', '//')) for line in prefix.splitlines()):
+            return [(name, content)]
+        result = []
+        for index, section in enumerate(sections):
+            heading = section.group().strip()
+            end = sections[index + 1].start() if index + 1 < len(sections) else len(content)
+            part = content[section.start():end].strip()
+            result.append((heading[1:-1].strip() or name, (prefix + '\n' + part).strip()))
+        return result
+
     def _get_json(self, url):
         response = self._session.get(
             url,
@@ -356,7 +373,8 @@ class CheatService:
         with self._lock:
             generation = self._generation
             cached = self._cache.get(title_id)
-            if cached and now - cached[0] < self._cache_ttl_s:
+            ttl = min(self._cache_ttl_s, 30) if cached and cached[1].get('provider_errors') else self._cache_ttl_s
+            if cached and now - cached[0] < ttl:
                 self._cache.move_to_end(title_id)
                 return cached[1]
 
@@ -396,21 +414,22 @@ class CheatService:
                     content = self.ensure_switchable_section(name, content)
                     if not content or len(content.encode('utf-8')) > _MAX_CHEAT_CONTENT:
                         continue
-                    content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
-                    if content_hash in known_hashes:
-                        continue
-                    classification = self.classify(name, content, source)
-                    bucket.append({
-                        'id': content_hash,
-                        'name': name.strip() or 'Unnamed cheat',
-                        'content': content,
-                        'content_hash': content_hash,
-                        'source': source,
-                        'tags': classification['tags'],
-                        'conflict_groups': classification['conflict_groups'],
-                        'role': self.entry_role(name, content),
-                    })
-                    known_hashes.add(content_hash)
+                    for section_name, section_content in self.split_sections(name, content):
+                        content_hash = hashlib.sha256(section_content.encode('utf-8')).hexdigest()
+                        if content_hash in known_hashes:
+                            continue
+                        classification = self.classify(section_name, section_content, source)
+                        bucket.append({
+                            'id': content_hash,
+                            'name': section_name.strip() or 'Unnamed cheat',
+                            'content': section_content,
+                            'content_hash': content_hash,
+                            'source': source,
+                            'tags': classification['tags'],
+                            'conflict_groups': classification['conflict_groups'],
+                            'role': self.entry_role(section_name, section_content),
+                        })
+                        known_hashes.add(content_hash)
 
         result = {
             'builds': merged,
@@ -429,8 +448,8 @@ class CheatService:
                 while len(self._cache) > 64 or self._cache_bytes > 32 * 1024 * 1024:
                     _, discarded = self._cache.popitem(last=False)
                     self._cache_bytes -= discarded[2]
-            else:
-                return self._load_title(title_id)
+        if generation != self._generation:
+            return self._load_title(title_id)
         return result
 
     def find_build(self, title_id, build_id):
@@ -484,13 +503,19 @@ class CheatService:
         entries = [item for item in result['cheats'] if item['id'] in selected]
         if not entries:
             raise ValueError('No valid cheats were selected for this build.')
+        masters = [item for item in result['cheats'] if item.get('role') == 'master']
+        if len(masters) == 1 and masters[0]['id'] not in selected:
+            entries.insert(0, masters[0])
         content = '\n\n'.join(item['content'].strip() for item in entries).strip() + '\n'
         grouped = {}
         for item in entries:
+            if item.get('role') == 'master':
+                continue
             for group in item.get('conflict_groups', []):
                 grouped.setdefault(group, []).append(item['id'])
         conflicts = [
-            {'group': group, 'entry_ids': ids}
+            {'group': group, 'entry_ids': ids,
+             'entry_names': [item['name'] for item in entries if item['id'] in ids]}
             for group, ids in sorted(grouped.items())
             if len(ids) > 1
         ]
@@ -506,6 +531,7 @@ class CheatService:
                     'source': item['source'],
                     'tags': item.get('tags', []),
                     'conflict_groups': item.get('conflict_groups', []),
+                    'role': item.get('role', 'normal'),
                 }
                 for item in entries
             ],

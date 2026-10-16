@@ -113,6 +113,17 @@ class CheatReliabilityTests(unittest.TestCase):
         self.assertEqual('master', CheatService.entry_role('Example', '{Master}\n04000000 00000000 00000001'))
         self.assertEqual('restore', CheatService.entry_role('Restore default FPS', '[Restore]\n04000000 00000000 00000001'))
 
+    def test_combined_provider_file_becomes_individual_switches(self):
+        service = self.service(b'')
+        payload = {BID: {'Example bundle': '{Master}\n04000000 00000000 00000001\n[60 FPS]\n04000000 00000000 0000003C\n[Restore 30 FPS]\n04000000 00000000 0000001E'}}
+        service._get_provider_json = lambda directory, *_args: payload if directory == 'cheats' else {}
+        found = service.find_build(TITLE, BID)
+        self.assertEqual(['master', 'normal', 'restore'], [entry['role'] for entry in found['cheats']])
+        selected = [entry['id'] for entry in found['cheats'] if entry['role'] != 'master']
+        rendered = service.render(TITLE, BID, selected)
+        self.assertEqual(3, len(rendered['selected']))
+        self.assertEqual(['60 FPS', 'Restore 30 FPS'], rendered['conflicts'][0]['entry_names'])
+
 
 if __name__ == '__main__':
     unittest.main()
