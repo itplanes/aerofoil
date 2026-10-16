@@ -1,0 +1,19 @@
+tests/test_cheat_reliability.py
+  s_a966402e60fc9c::t_dfcde0c19deba3 116-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "4d2ed4458db533099ea219b3a41f8b2cad53ba72",
+  "prompts": {},
+  "sessions": {
+    "s_a966402e60fc9c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4c6c-88ad-7411-bf2b-8e9feef7f083",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Cian <cian@macbook.local>"
+    }
+  }
+}
